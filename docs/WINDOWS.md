@@ -13,23 +13,58 @@
 
 ## 一、装环境（只做一次）
 
-用 **PowerShell**（Win10/11 自带）。推荐 `winget`：
+用 **PowerShell**（Win10/11 自带）。
+
+### 方式 1：winget（先修源）
+
+`winget` 默认会去查 `msstore` 源；该源在国内常解析不到，于是报
+`WinHttpSendRequest: 12007 无法解析服务器的名称或地址 (0x80072ee7)` —— **包本身没问题**，只是要指定源：
 
 ```powershell
-winget install OpenJS.NodeJS.LTS          # Node 20/22+（Electron 40 需要）
-winget install Python.Python.3.12         # Python 3.11–3.13 都行，3.12 最稳
-winget install Git.Git                    # git（也可直接下 ZIP，见下）
+# 一劳永逸：禁掉用不上的 msstore 源
+winget source remove msstore
+
+winget install OpenJS.NodeJS.LTS      # Node 20/22+
+winget install Python.Python.3.12     # Python 3.11–3.13，3.12 最稳
+winget install Git.Git
+```
+
+或每次显式指定源（不删源也行）：
+
+```powershell
+winget install --source winget --accept-package-agreements --accept-source-agreements OpenJS.NodeJS.LTS
+```
+
+### 方式 2：直接下镜像安装器（winget 装得慢/失败时用这个）
+
+以下三个地址**实测可达**（npmmirror 镜像），双击安装即可。装 Python 时务必勾选
+**Add python.exe to PATH**；Git 用默认选项。
+
+| 组件 | 下载地址 |
+|---|---|
+| Node.js 22.20.0 (x64) | `https://registry.npmmirror.com/-/binary/node/latest-v22.x/node-v22.20.0-x64.msi` |
+| Python 3.12.9 (amd64) | `https://registry.npmmirror.com/-/binary/python/3.12.9/python-3.12.9-amd64.exe` |
+| Git for Windows 2.55.0 | `https://registry.npmmirror.com/-/binary/git-for-windows/v2.55.0.windows.1/Git-2.55.0-64-bit.exe` |
+
+PowerShell 里直接下：
+
+```powershell
+cd $env:USERPROFILE\Downloads
+curl.exe -L -o node.msi  https://registry.npmmirror.com/-/binary/node/latest-v22.x/node-v22.20.0-x64.msi
+curl.exe -L -o python.exe https://registry.npmmirror.com/-/binary/python/3.12.9/python-3.12.9-amd64.exe
+curl.exe -L -o git.exe   https://registry.npmmirror.com/-/binary/git-for-windows/v2.55.0.windows.1/Git-2.55.0-64-bit.exe
+# 然后逐个双击安装
 ```
 
 装完**关掉再重开 PowerShell**（让 PATH 生效），验证：
 
 ```powershell
-node -v      # 期待 v20.x / v22.x
+node -v      # 期待 v22.x
 python -V    # 期待 Python 3.12.x
 git --version
 ```
 
-> Git 不是必须的：也可以直接在 GitHub 页面上 **Code → Download ZIP** 下载解压。
+> Git 不是必须的（只是用来 clone）：也可以在 GitHub 页面上 **Code → Download ZIP** 下载解压。
 
 ---
 
