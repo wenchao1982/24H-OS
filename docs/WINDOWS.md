@@ -84,9 +84,12 @@ npm install --include=dev
 # 3) 构建随包运行时（拉核心源码 + 装依赖，几分钟；产物 runtime\ 约 300–400 MB）
 powershell -ExecutionPolicy Bypass -File scripts\build-runtime.ps1 -Ref main
 
-# 4) 自检（不需要图形界面；25 项断言应全绿）
-$env:HERMES_HOME = "$env:TEMP\24h-smoke"
-npm run smoke
+# 4) 自检（不需要图形界面；36 项断言应全绿）
+npm run smoke          # 默认就写临时 home，不会动你自己的 Hermes 配置
+
+# 4b) 界面层冒烟（可选：用无头浏览器验「弹层关得掉、列表加载得上」）
+$env:CHROME = "C:\dev\chrome-headless-shell\chrome-headless-shell.exe"
+npm run ui-smoke       # 没装 puppeteer-core / 没设 CHROME 就自动跳过，不算失败
 
 # 5) 起界面
 npm run dev
@@ -110,6 +113,21 @@ npm run dev
 | `npm : 无法加载文件 ... npm.ps1，因为在此系统上禁止运行脚本` | PowerShell 执行策略。`Set-ExecutionPolicy -Scope CurrentUser RemoteSigned -Force`，或改用 `npm.cmd` |
 | 杀软拦 node/python 子进程 | 首次运行时允许；企业管控环境把 `C:\dev\24H-OS` 与 `%APPDATA%\24H` 加白 |
 | 界面显示「核心 启动中…」很久不动 | 首次启动要建运行时环境 + 被 Defender 扫 300MB 运行时，可能 1–2 分钟。点右上「日志」看核心输出；超过 3 分钟（壳的超时）会弹红色横幅并给「重试」。建议把项目目录与 `%APPDATA%\24H` 加入 Defender 排除项 |
+
+### 界面层冒烟要的那个无头浏览器（可选）
+
+`npm run ui-smoke` 用真浏览器（不需要图形界面）打开 `src/index.html`，专测协议层测不到的界面问题
+（弹层藏没藏住、点关闭关不关得掉、核心晚就绪时列表会不会一直转圈）。要两份东西：
+
+```powershell
+# ① puppeteer-core（只是驱动，很小；走国内镜像）
+npm i -D puppeteer-core --registry=https://registry.npmmirror.com --no-audit --no-fund
+# ② chrome-headless-shell（win64，约 120MB，解压即用，不用装浏览器）
+curl.exe --ssl-no-revoke -L -o hs.zip https://cdn.npmmirror.com/binaries/chrome-for-testing/141.0.7390.65/win64/chrome-headless-shell-win64.zip
+Expand-Archive -Path .\hs.zip -DestinationPath C:\dev -Force
+$env:CHROME = "C:\dev\chrome-headless-shell-win64\chrome-headless-shell.exe"
+npm run ui-smoke
+```
 
 ### 让 Windows Defender 别拖慢启动（强烈建议）
 

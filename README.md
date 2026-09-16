@@ -136,9 +136,20 @@ HERMES_RUNTIME_PYTHON=/path/to/hermes/venv/bin/python npm run probe
 ```bash
 npm run smoke     # 无图形环境也能跑：启动核心 → token → WS → 会话 → 发消息 → 事件闭环 → 恢复路径
 npm run probe     # 更轻量：只验证核心启动 + 健康检查 + 一次鉴权调用
+npm run ui-smoke  # 界面层：用 chrome-headless-shell 打开 src/index.html，验「藏得住/关得掉/加载得上」
 ```
 
-`npm run smoke` 覆盖 16 项断言（含 4001/resume 恢复路径）。本机未配置模型时，`prompt.submit`
+`npm run ui-smoke` 是界面层的护栏：它用真的浏览器渲染 `src/index.html`（`window.hermes` 用桩顶掉），
+专测协议层测不到、但用户一眼就看得见的那类问题 —— 带 `hidden` 的弹层有没有真藏住、点「关闭」关不关得掉、
+窗口比核心先就绪时（常态）模型/会话列表会不会一直停在「读取中…」、IPC 的 `{ok,data}` 拆没拆。
+需要 `chrome-headless-shell`（`CHROME=` 指向它）和 `puppeteer-core`（`npm i -D puppeteer-core`）；
+两者缺一个就自动跳过、不算失败。`--before` 参数会改用 `git HEAD` 里的旧文件跑一遍做对照。
+
+`npm run smoke` 覆盖 36 项断言（含 4001/resume 恢复路径和界面层护栏），并且**默认把核心的
+`HERMES_HOME` 指向一个临时目录** —— 这条链路会真写配置（存 key、写自定义端点），隔离之后
+跑测试不会动你自己那份 profile（要跑真实 home 就显式 `HERMES_HOME=... npm run smoke`）。
+本机实测：隔离 home 下 **36/36 通过**；对着已配好模型的 home 跑时，`prompt.submit` 之后
+会在 6 秒窗口内收不到 turn 结束信号（那是模型服务商可达性问题，不是通路问题）。本机未配置模型时，`prompt.submit`
 会以 `message.complete(status=error)` 收尾、`session.interrupt` 返回 5032 —— 这两项按"环境未就绪"
 处理，不代表通路有问题。
 

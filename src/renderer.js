@@ -20,6 +20,7 @@ const state = {
   cwd: '',
   contract: null,
   providerReady: null,
+  corePhase: 'starting', // 核心当前阶段（窗口通常比核心先就绪，靠它决定要不要等）
   searchQuery: '',
   _searchTimer: null
 }
@@ -601,6 +602,7 @@ function appendLog(entry) {
 }
 
 function setCoreState(phase, extra = {}) {
+  state.corePhase = phase
   $('core-state').textContent = phase + (extra.port ? ` :${extra.port}` : '')
   $('dot').className = 'dot ' + phase
   $('gw-chip').hidden = phase !== 'ready'
@@ -612,9 +614,11 @@ function setGatewayState(connected) {
 }
 
 function refreshRunInfo() {
-  window.hermes.state().then((s) => {
+  // 注意：所有 IPC 调用统一返回 {ok,data}，状态在 data 里 —— 别再直接读 s.phase（会得到 undefined）
+  window.hermes.state().then((r) => {
+    const s = r?.data ?? {}
     renderRunInfo({
-      核心: s.phase,
+      核心: s.phase ?? '-',
       端口: s.port ?? '-',
       会话: state.sessionId ?? '-',
       模型: state.model || '-'
@@ -670,6 +674,18 @@ async function saveCustomEndpoint() {
 }
 
 async function loadSettingsForm() {
+  const status = $('settings-status')
+  if (state.corePhase !== 'ready') {
+    // 窗口通常比核心先就绪：这时读配置只会拿到「核心尚未就绪」，
+    // 不如直说，并保证核心就绪后会自己补上（见 afterCoreReady）。
+    status.textContent = '核心还在启动 —— 就绪后这里会自动读出服务商与配置。'
+    renderProviderSelect()
+    return
+  }
+  const loading = '正在读取核心配置…'
+  if (!status.textContent) status.textContent = loading
+  // 服务商列表来自 model.options；核心晚就绪时它是空的，这里补拉一次，免得下拉框空白
+  if (!state.providers.length) await refreshModels()
   const cfg = await window.hermes.configGet()
   if (cfg.ok) {
     const c = cfg.data ?? {}
@@ -679,6 +695,7 @@ async function loadSettingsForm() {
   renderProviderSelect()
   await loadCustomEndpoints()
   refreshRunInfo()
+  if (status.textContent === loading) status.textContent = ''
 }
 
 async function saveSettings() {
@@ -736,12 +753,21 @@ $('search').addEventListener('input', (e) => {
   clearTimeout(state._searchTimer)
   state._searchTimer = setTimeout(() => runSearch(q), 250)
 })
-$('btn-settings').addEventListener('click', async () => {
-  $('settings').hidden = false
-  await loadSettingsForm()
-})
-$('btn-close-settings').addEventListener('click', () => {
+function closeSettings() {
   $('settings').hidden = true
+}
+function openSettings() {
+  $('settings').hidden = false
+  loadSettingsForm()
+}
+$('btn-settings').addEventListener('click', openSettings)
+$('btn-close-settings').addEventListener('click', closeSettings)
+$('btn-close-settings-x').addEventListener('click', closeSettings)
+$('settings').addEventListener('click', (e) => {
+  if (e.target === $('settings')) closeSettings() // 点卡片外的底色也能关
+})
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !$('settings').hidden) closeSettings()
 })
 $('btn-save-settings').addEventListener('click', saveSettings)
 $('btn-ce-save').addEventListener('click', saveCustomEndpoint)
@@ -784,7 +810,10 @@ function onStartupFailure(message) {
   })
   setCoreState('failed')
 }
-window.hermes.onReady(({ port }) => setCoreState('ready', { port }))
+window.hermes.onReady(async ({ port }) => {
+  setCoreState('ready', { port })
+  await afterCoreReady()
+})
 window.hermes.onRuntimeError(({ message }) => {
   onStartupFailure(message)
   renderMessage({ role: 'error', text: `核心启动失败：${message}` })
@@ -796,20 +825,33 @@ window.hermes.onEvent(onGatewayEvent)
 
 /* ───────────────────────── 启动 ───────────────────────── */
 
-async function boot() {
-  const s = await window.hermes.state()
-  setCoreState(s.phase, s)
-  for (const e of s.logs ?? []) appendLog(e)
-  if (s.phase !== 'ready') {
-    emptyHint('正在启动核心…')
-    return
-  }
+/** 核心就绪后要跑一次（且只跑一次首屏初始化）。
+ *  窗口比核心先就绪是常态（核心要拉 python 起来，几秒到几十秒），所以这条路径
+ *  必须由 onReady 也能触发 —— 否则模型列表/会话列表永远停在「读取中…」。 */
+let coreReadyLoaded = false
+async function afterCoreReady() {
   await refreshModels()
   await refreshSessions()
+  refreshRunInfo()
+  if (!$('settings').hidden) await loadSettingsForm() // 弹层开着就顺手把配置读出来
+  if (coreReadyLoaded) return // 重启核心后再就绪：只刷新列表，保留当前会话
+  coreReadyLoaded = true
   paintCwd('')
   if (state.sessions.length) await activateSession(state.sessions[0].id)
   else await newSession()
-  refreshRunInfo()
+}
+
+async function boot() {
+  // IPC 返回的是 {ok,data}：不拆开的话 s.phase 恒为 undefined，
+  // 于是「核心已就绪」也会被判成没就绪，首屏永远停在「模型：读取中…」。
+  const s = (await window.hermes.state())?.data ?? {}
+  setCoreState(s.phase ?? 'starting', s)
+  for (const e of s.logs ?? []) appendLog(e)
+  if (s.phase !== 'ready') {
+    emptyHint('正在启动核心…（就绪后会自动加载会话）')
+    return
+  }
+  await afterCoreReady()
 }
 
 boot()

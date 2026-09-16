@@ -9,7 +9,7 @@
  * 没有配置模型 key 时，prompt.submit 会以 message.complete(status=error) 结束 —— 这属预期，
  * 说明通路正常（能收到完整事件序列）。
  */
-import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
@@ -48,11 +48,27 @@ const check = (name, ok, detail = '') => {
   const rendererSrc = readFileSync(path.join(root, 'src', 'renderer.js'), 'utf8')
   check('index.html 无内联 style 属性（CSP style-src self）', !/style\s*=/.test(html), /style\s*=/.test(html) ? '发现 style= 属性' : '干净')
   check('renderer.js 不写内联样式', !/\.style\.(cssText|setProperty)|setAttribute\(['\"]style/.test(rendererSrc), '仅通过 className 控制样式')
+
+  // 界面「没反应 / 关不掉」这类问题同样测不出来于协议层：
+  //  ① 作者样式的 display 会盖掉 UA 的 [hidden]{display:none} → 带 hidden 的元素其实一直显示
+  //  ② 窗口通常比核心先就绪，初始化只挂在 boot() 上的话，模型/会话列表会永远空着
+  const cssSrc = readFileSync(path.join(root, 'src', 'styles.css'), 'utf8')
+  const hiddenOk = /\[hidden\][^{]*\{[^}]*display\s*:\s*none/.test(cssSrc)
+  check('styles.css 让 hidden 真的隐藏', hiddenOk, hiddenOk ? '有 [hidden] 显示规则' : '缺 [hidden] 规则：设置弹层会一直显示且关不掉')
+  const closers = ['btn-close-settings-x', 'btn-close-settings', "e.key === 'Escape'"].filter((k) => html.includes(k) || rendererSrc.includes(k))
+  check('设置弹层有四个关闭入口（✕ / 关闭 / Esc / 点底色）', closers.length >= 3, `命中 ${closers.length} 个`)
+  const lateReady = /onReady\([\s\S]{0,240}afterCoreReady/.test(rendererSrc)
+  check('核心晚就绪也会补跑首屏加载', lateReady, lateReady ? 'onReady → afterCoreReady' : 'onReady 没接初始化：模型/会话列表会一直空着')
 }
+
+// 核心 home 隔离：这条链路会真的写配置（model.save_key 会覆盖 key、还会写自定义端点），
+// 默认必须落在临时目录里，绝不碰用户自己的 ~/.hermes。要用真实 home 就显式传 HERMES_HOME=。
+const hermesHome = process.env.HERMES_HOME || mkdtempSync(path.join(TMP, '24h-os-smoke-home-'))
+console.log(`核心 home：${hermesHome}${process.env.HERMES_HOME ? '（来自 HERMES_HOME）' : '（临时，跑完可删）'}`)
 
 const runtime = new Runtime({
   appRoot: path.resolve(import.meta.dirname, '..'),
-  hermesHome: process.env.HERMES_HOME,
+  hermesHome,
   onLog: () => {}
 })
 

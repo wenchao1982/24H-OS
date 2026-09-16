@@ -11,6 +11,7 @@
     "dev": "electron .",
     "probe": "node electron/runtime.js --probe",
     "smoke": "node scripts/smoke.mjs",
+    "ui-smoke": "node scripts/ui-smoke.mjs",
     "runtime": "bash scripts/build-runtime.sh",
     "pack:dir": "electron-builder --dir",
     "dist": "electron-builder --win nsis",
