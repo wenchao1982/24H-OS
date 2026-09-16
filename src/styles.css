@@ -136,3 +136,9 @@ aside .side-head button { flex: 1; }
 .sess { position: relative; }
 .sess .row1 { display: flex; align-items: center; gap: 6px; }
 .acts button { padding: 2px 6px; font-size: 11px; }
+
+/* 设置页：表单堆叠与按钮行（原先用内联 style，被 CSP style-src 'self' 拦掉 → 改为类名） */
+.stack > input, .stack > button { display: block; width: 100%; margin-bottom: 6px; }
+.actions { display: flex; gap: 10px; margin-top: 14px; align-items: center; }
+.mt8 { margin-top: 8px; }
+.rename-input { width: 100%; padding: 3px 6px; font-size: 12.5px; }

@@ -168,8 +168,7 @@ function renderSessions() {
 function startRename(row, titleEl, id) {
   const input = el('input')
   input.value = titleEl.textContent
-  input.className = 'rename'
-  input.style.cssText = 'width:100%;padding:3px 6px;font-size:12.5px'
+  input.className = 'rename-input'
   titleEl.replaceWith(input)
   input.focus()
   input.select()

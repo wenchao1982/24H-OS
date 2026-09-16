@@ -86,19 +86,21 @@
         </div>
         <div class="field">
           <label>自定义 OpenAI 兼容端点（国产服务商 / 自建网关）</label>
-          <input id="ce-name" placeholder="名称，如 火山方舟" style="margin-bottom:6px" />
-          <input id="ce-base" placeholder="Base URL，如 https://ark.cn-beijing.volces.com/api/v3" style="margin-bottom:6px" />
-          <input id="ce-model" placeholder="模型名，如 doubao-pro-32k" style="margin-bottom:6px" />
-          <input id="ce-key" type="password" placeholder="API Key" style="margin-bottom:6px" />
+          <div class="stack">
+          <input id="ce-name" placeholder="名称，如 火山方舟" />
+          <input id="ce-base" placeholder="Base URL，如 https://ark.cn-beijing.volces.com/api/v3" />
+          <input id="ce-model" placeholder="模型名，如 doubao-pro-32k" />
+          <input id="ce-key" type="password" placeholder="API Key" />
           <button id="btn-ce-save">保存并设为默认</button>
+          </div>
           <div class="hint" id="ce-status"></div>
-          <div id="custom-endpoints" style="margin-top:8px"></div>
+          <div id="custom-endpoints" class="mt8"></div>
         </div>
         <div class="field">
           <label>运行信息</label>
           <div id="run-info"></div>
         </div>
-        <div class="row" style="display: flex; gap: 10px; margin-top: 14px">
+        <div class="actions">
           <button class="primary" id="btn-save-settings">保存</button>
           <button id="btn-close-settings">关闭</button>
           <span class="spacer"></span>

@@ -41,6 +41,13 @@ const check = (name, ok, detail = '') => {
     preloadSrc.length > 0 && !/^\s*import\s/m.test(preloadSrc),
     /^\s*import\s/m.test(preloadSrc) ? '发现 import —— 会加载失败' : '仅 require'
   )
+
+  // CSP 是 style-src 'self'，任何内联 style 属性/赋值都会被拦（DevTools 里报
+  // "Applying inline style violates ... Content Security Policy"），所以样式必须走类名。
+  const html = readFileSync(path.join(root, 'src', 'index.html'), 'utf8')
+  const rendererSrc = readFileSync(path.join(root, 'src', 'renderer.js'), 'utf8')
+  check('index.html 无内联 style 属性（CSP style-src self）', !/style\s*=/.test(html), /style\s*=/.test(html) ? '发现 style= 属性' : '干净')
+  check('renderer.js 不写内联样式', !/\.style\.(cssText|setProperty)|setAttribute\(['\"]style/.test(rendererSrc), '仅通过 className 控制样式')
 }
 
 const runtime = new Runtime({
