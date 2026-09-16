@@ -719,10 +719,26 @@ $('input').addEventListener('keydown', (e) => {
   }
 })
 
-window.hermes.onState((s) => setCoreState(s.phase, s))
+window.hermes.onState((s) => {
+  setCoreState(s.phase, s)
+  if (s.phase === 'starting') {
+    showBanner('核心正在启动…（首次启动要建运行时环境，可能 1–2 分钟，杀软扫描时更久）', {
+      action: { label: '看日志', onClick: () => { $('drawer').hidden = false } }
+    })
+  }
+})
+
+/** 启动失败/超时：给出重试入口与排查提示 */
+function onStartupFailure(message) {
+  showBanner(`核心启动失败：${message}`, {
+    error: true,
+    action: { label: '重试', onClick: () => window.hermes.restart() }
+  })
+  setCoreState('failed')
+}
 window.hermes.onReady(({ port }) => setCoreState('ready', { port }))
 window.hermes.onRuntimeError(({ message }) => {
-  setCoreState('failed')
+  onStartupFailure(message)
   renderMessage({ role: 'error', text: `核心启动失败：${message}` })
 })
 window.hermes.onRuntimeExit(() => setCoreState('exited'))

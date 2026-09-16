@@ -69,6 +69,9 @@ export function buildArgs(runtime, { profile } = {}) {
   return runtime.kind === 'path' ? [...head, ...serve] : ['-m', 'hermes_cli.main', ...head, ...serve]
 }
 
+/** 核心启动超时（毫秒）。Windows 首次启动时要被 Defender 扫一遍 300MB 运行时，放长一些。 */
+const START_TIMEOUT_MS = Number(process.env.HERMES_START_TIMEOUT_MS || 180_000)
+
 export class Runtime {
   /**
    * @param {{resourcesPath?: string, appRoot?: string, hermesHome?: string, profile?: string,
@@ -106,11 +109,17 @@ export class Runtime {
       this.child = child
 
       let settled = false
+      const startedAt = Date.now()
       const timer = setTimeout(() => {
         if (settled) return
         settled = true
-        reject(new Error(`核心 60 秒内未就绪（命令：${runtime.cmd} ${args.join(' ')}）`))
-      }, 60_000)
+        reject(new Error(`核心 ${START_TIMEOUT_MS / 1000} 秒内未就绪（命令：${runtime.cmd} ${args.join(' ')}）`))
+      }, START_TIMEOUT_MS)
+      // 每 10 秒报一次等待进度，UI 上能看出"还在跑"而不是卡死
+      const ticker = setInterval(() => {
+        if (settled) return
+        this.opts.onLog?.(`[壳] 等待核心就绪… 已 ${Math.round((Date.now() - startedAt) / 1000)}s`, 'shell')
+      }, 10_000)
 
       const feed = (stream) => (chunk) => {
         for (const line of String(chunk).split(/\r?\n/)) {
@@ -120,6 +129,7 @@ export class Runtime {
           if (m && !settled) {
             settled = true
             clearTimeout(timer)
+            clearInterval(ticker)
             this.port = Number(m[1])
             resolve(this.port)
           }
@@ -132,6 +142,7 @@ export class Runtime {
         if (!settled) {
           settled = true
           clearTimeout(timer)
+          clearInterval(ticker)
           reject(err)
         }
       })
@@ -142,6 +153,7 @@ export class Runtime {
         if (!settled) {
           settled = true
           clearTimeout(timer)
+          clearInterval(ticker)
           reject(new Error(`核心进程启动失败/提前退出：code=${code} signal=${signal}`))
         }
         this._onExit?.(this.exitInfo)

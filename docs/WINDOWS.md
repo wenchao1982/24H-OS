@@ -109,6 +109,17 @@ npm run dev
 | `curl` 报 `CRYPT_E_NO_REVOCATION_CHECK (0x80092012)` | Windows 版 curl 走 schannel，CRL/OCSP 不可达时如此。加 `--ssl-no-revoke`（`build-runtime.ps1` 已内置） |
 | `npm : 无法加载文件 ... npm.ps1，因为在此系统上禁止运行脚本` | PowerShell 执行策略。`Set-ExecutionPolicy -Scope CurrentUser RemoteSigned -Force`，或改用 `npm.cmd` |
 | 杀软拦 node/python 子进程 | 首次运行时允许；企业管控环境把 `C:\dev\24H-OS` 与 `%APPDATA%\24H` 加白 |
+| 界面显示「核心 启动中…」很久不动 | 首次启动要建运行时环境 + 被 Defender 扫 300MB 运行时，可能 1–2 分钟。点右上「日志」看核心输出；超过 3 分钟（壳的超时）会弹红色横幅并给「重试」。建议把项目目录与 `%APPDATA%\24H` 加入 Defender 排除项 |
+
+### 让 Windows Defender 别拖慢启动（强烈建议）
+
+```powershell
+# 以管理员 PowerShell 运行
+Add-MpPreference -ExclusionPath "C:\dev\24H-OS"
+Add-MpPreference -ExclusionPath "$env:APPDATA\24H"
+```
+
+首次启动时 Defender 会逐个扫描运行时里的几万个文件，这是"核心启动中"卡很久的头号原因。
 
 ### Electron 二进制没装上怎么办
 
