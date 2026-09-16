@@ -7,6 +7,7 @@ import { BrowserWindow, Menu, app, clipboard, dialog, ipcMain, shell } from 'ele
 import fs from 'node:fs'
 import path from 'node:path'
 import { callWithSessionRemap } from './session-remap.mjs'
+import { fetchDistManifest, installRuntimeAsset, listInstalledRuntimes } from './runtime-download.mjs'
 import { Gateway } from './gateway.js'
 import { Runtime } from './runtime.js'
 
@@ -269,15 +270,62 @@ handle('ui:contextMenu', (items) => {
 // 运行时：列出可用目录 + 切换（切换后重启核心）
 handle('runtime:list', () => {
   const active = runtime?.pinnedRoot ?? runtime?._resolved?.root ?? null
-  return {
-    active,
-    pinned: readPrefs().runtimeDir ?? null,
-    candidates: Runtime.listCandidates({
-      appRoot: app.getAppPath(),
-      resourcesPath: process.resourcesPath
-    })
+  const candidates = Runtime.listCandidates({
+    appRoot: app.getAppPath(),
+    resourcesPath: process.resourcesPath
+  })
+  // 下载版运行时（userData/runtimes/runtime.<版本>）也列出来，标记为 downloaded
+  for (const item of listInstalledRuntimes(runtimesRoot())) {
+    candidates.push({ ...item, usable: true })
+  }
+  return { active, pinned: readPrefs().runtimeDir ?? null, distUrl: readPrefs().runtimeDistUrl ?? '', candidates }
+})
+/** 下载版运行时的落点（userData/runtimes）—— 安装包目录是只读的，下载的东西只能放用户数据里 */
+const runtimesRoot = () => path.join(app.getPath('userData'), 'runtimes')
+
+handle('runtime:dist', (payload) => {
+  const prefs = readPrefs()
+  if (payload && typeof payload === 'object' && 'url' in payload) {
+    const next = { ...prefs, runtimeDistUrl: String(payload.url || '').trim() }
+    fs.mkdirSync(path.dirname(prefsFile()), { recursive: true })
+    fs.writeFileSync(prefsFile(), JSON.stringify(next, null, 2) + '\n', 'utf8')
+    return { url: next.runtimeDistUrl }
+  }
+  return { url: prefs.runtimeDistUrl ?? '', installed: listInstalledRuntimes(runtimesRoot()) }
+})
+
+handle('runtime:checkUpdate', async () => {
+  const { url } = { url: readPrefs().runtimeDistUrl ?? '' }
+  if (!url) return { configured: false, message: '还没配置分发源地址（填一个 http(s) 前缀，例如 http://your-host/24h-dist）' }
+  try {
+    const manifest = await fetchDistManifest(url)
+    const installed = listInstalledRuntimes(runtimesRoot()).map((r) => r.coreVersion)
+    const activeVersion = runtime?._resolved?.root ? undefined : undefined
+    return {
+      configured: true,
+      available: !installed.includes(manifest.coreVersion),
+      manifest,
+      installed,
+      message: installed.includes(manifest.coreVersion)
+        ? `版本 ${manifest.coreVersion} 已经装过了`
+        : `可安装 ${manifest.coreVersion}（${(Number(manifest.size || 0) / 1024 / 1024).toFixed(0)} MB）`
+    }
+  } catch (err) {
+    return { configured: true, error: err.message }
   }
 })
+
+handle('runtime:install', async () => {
+  const url = readPrefs().runtimeDistUrl ?? ''
+  if (!url) throw new Error('还没配置分发源地址')
+  const result = await installRuntimeAsset({
+    baseUrl: url,
+    runtimesRoot: runtimesRoot(),
+    onProgress: (p) => send('runtime:download', p)
+  })
+  return { ...result, candidates: Runtime.listCandidates({ appRoot: app.getAppPath(), resourcesPath: process.resourcesPath, runtimesRoot: runtimesRoot() }) }
+})
+
 handle('runtime:activate', async (payload) => {
   const dir = payload?.dir ? String(payload.dir) : null
   const next = { ...readPrefs(), runtimeDir: dir }

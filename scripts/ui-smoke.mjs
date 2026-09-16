@@ -106,11 +106,16 @@ const RESP = {
   runtimeList: {
     active: '/repo/runtime',
     pinned: null,
+    distUrl: 'http://dl.example.com/24h-dist',
     candidates: [
       { dir: '/repo/runtime', name: 'runtime', usable: true, coreVersion: '0.21.3', coreCommit: '948e9706aa11', kind: 'current' },
-      { dir: '/repo/runtime.prev', name: 'runtime.prev', usable: true, coreVersion: '0.21.2', coreCommit: '11aa2233bb44', kind: 'previous' }
+      { dir: '/repo/runtime.prev', name: 'runtime.prev', usable: true, coreVersion: '0.21.2', coreCommit: '11aa2233bb44', kind: 'previous' },
+      { dir: '/userdata/runtimes/runtime.0.21.4', name: 'runtime.0.21.4', usable: true, coreVersion: '0.21.4', coreCommit: 'ff00aa11bb22', kind: 'downloaded' }
     ]
-  }
+  },
+  runtimeDist: { url: 'http://dl.example.com/24h-dist', installed: [{ coreVersion: '0.21.4' }] },
+  runtimeCheckUpdate: { configured: true, available: true, message: '可安装 0.21.4（100 MB）', installed: ['0.21.4'],
+    manifest: { name: 'hermes-runtime-0.21.4-linux-x64.tar.gz', size: 105000000, sha256: 'aabbcc', coreVersion: '0.21.4' } }
 }
 
 const browser = await puppeteer.launch({
@@ -311,10 +316,22 @@ const geo = await page.evaluate(() => {
 })
 const runtimeRows = await page.$$eval('#runtime-list .kv', (n) => n.map((x) => x.textContent))
 check(
-  '「高级」分节列出可用运行时（含上一份回退项）',
-  runtimeRows.length === 2 && runtimeRows.join(' ').includes('runtime.prev') && runtimeRows.join(' ').includes('0.21.2'),
-  runtimeRows.join(' | ').slice(0, 160)
+  '「高级」分节列出可用运行时（随包 / 上一份 / 已下载）',
+  runtimeRows.length === 3 &&
+    runtimeRows.join(' ').includes('runtime.prev') &&
+    runtimeRows.join(' ').includes('已下载') &&
+    runtimeRows.join(' ').includes('0.21.4'),
+  runtimeRows.join(' | ').slice(0, 200)
 )
+check(
+  '分发源地址回填到输入框',
+  (await page.$eval('#dist-url', (el) => el.value)) === 'http://dl.example.com/24h-dist',
+  await page.$eval('#dist-url', (el) => el.value)
+)
+await page.click('#btn-runtime-check')
+await wait(300)
+const distStatus = await page.$eval('#dist-status', (el) => el.textContent)
+check('点「检查运行时更新」能读到分发源清单', /0\.21\.4/.test(distStatus), distStatus.slice(0, 80))
 
 check(
   '设置弹层不裁内容：底部「完成」栏在滚动区之下、卡片之内',

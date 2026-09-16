@@ -67,6 +67,9 @@ contextBridge.exposeInMainWorld('hermes', {
   runtimeInfo: invoke('runtime:info'),
   runtimeList: invoke('runtime:list'),
   runtimeActivate: invoke('runtime:activate'),
+  runtimeDist: invoke('runtime:dist'),
+  runtimeCheckUpdate: invoke('runtime:checkUpdate'),
+  runtimeInstall: invoke('runtime:install'),
   openPath: invoke('ui:openPath'),
   copyText: invoke('ui:copyText'),
   saveTextFile: invoke('ui:saveText'),
@@ -93,5 +96,6 @@ contextBridge.exposeInMainWorld('hermes', {
   onEvent: on('gateway:event'),
   onBootProgress: on('boot:progress'),
   // 核心把会话装回运行时后 id 会变（stored id → runtime id），渲染层必须跟着换
-  onSessionRemapped: on('session:remapped')
+  onSessionRemapped: on('session:remapped'),
+  onRuntimeDownload: on('runtime:download')
 })

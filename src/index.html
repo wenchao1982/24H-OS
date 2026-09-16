@@ -238,6 +238,19 @@
               </div>
 
               <div class="field">
+                <label>运行时分发源</label>
+                <div class="row-2">
+                  <input id="dist-url" placeholder="http://your-host/24h-dist" />
+                  <button id="btn-dist-save">保存地址</button>
+                </div>
+                <div class="row-2 mt8">
+                  <button id="btn-runtime-check">检查运行时更新</button>
+                  <button id="btn-runtime-install">下载并安装</button>
+                </div>
+                <div class="hint" id="dist-status">把 npm run package:runtime 产出的三个文件（tar.gz / .sha256 / runtime-manifest.json）放到这个地址下即可。</div>
+              </div>
+
+              <div class="field">
                 <label>核心进程</label>
                 <div class="row-2">
                   <button id="btn-restart-core" title="重启核心进程">重启核心</button>

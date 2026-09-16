@@ -1463,7 +1463,9 @@ async function renderRuntimeList() {
     box.appendChild(el('div', 'hint', '没有找到运行时目录（开发模式下可能来自 PATH 上的 hermes）'))
     return
   }
-  const kindLabel = { current: '当前默认', previous: '上一份（回退用）', archived: '历史版本' }
+  const kindLabel = { current: '当前默认', previous: '上一份（回退用）', archived: '历史版本', downloaded: '已下载（分发源）' }
+  const distInput = $('dist-url')
+  if (distInput && document.activeElement !== distInput) distInput.value = data.distUrl ?? distInput.value
   for (const item of list) {
     const row = el('div', 'kv')
     const left = el('span')
@@ -1489,6 +1491,63 @@ async function renderRuntimeList() {
     box.appendChild(row)
   }
 }
+
+/** 运行时分发源：保存地址 / 检查更新 / 下载安装（下载走壳，进度由 runtime:download 事件推回来） */
+async function saveDistUrl() {
+  const url = $('dist-url').value.trim()
+  const res = await window.hermes.runtimeDist({ url }).catch(() => ({ ok: false, error: '调用失败' }))
+  $('dist-status').textContent = res.ok ? (url ? `已保存分发源：${url}` : '已清空分发源地址') : `保存失败：${res.error}`
+}
+
+async function checkRuntimeUpdate() {
+  const st = $('dist-status')
+  st.textContent = '正在读取分发源清单…'
+  const res = await window.hermes.runtimeCheckUpdate().catch(() => ({ ok: false, error: '调用失败' }))
+  if (!res.ok) {
+    st.textContent = `检查失败：${res.error}`
+    return null
+  }
+  const d = res.data ?? {}
+  if (!d.configured) {
+    st.textContent = d.message
+    return null
+  }
+  if (d.error) {
+    st.textContent = `检查失败：${d.error}`
+    return null
+  }
+  st.textContent = (d.message ?? '') + (d.installed?.length ? `（已下载：${d.installed.join(', ')}）` : '')
+  return d
+}
+
+async function installRuntime() {
+  const st = $('dist-status')
+  const btn = $('btn-runtime-install')
+  st.textContent = '正在下载运行时…'
+  btn.disabled = true
+  try {
+    const res = await window.hermes.runtimeInstall().catch((err) => ({ ok: false, error: String(err?.message ?? err) }))
+    if (!res.ok) {
+      st.textContent = `安装失败：${res.error}`
+      return
+    }
+    st.textContent = `已安装运行时 ${res.data?.coreVersion ?? ''}，可在上面列表里切换使用。`
+    renderRuntimeList()
+  } finally {
+    btn.disabled = false
+  }
+}
+
+window.hermes.onRuntimeDownload?.((progress) => {
+  const st = $('dist-status')
+  if (!st) return
+  if (progress?.stage === 'download') {
+    const pct = progress.percent != null ? `${progress.percent}%` : `${(Number(progress.received || 0) / 1024 / 1024).toFixed(0)} MB`
+    st.textContent = `正在下载：${pct}`
+  } else if (progress?.message) {
+    st.textContent = `${progress.message}`
+  }
+})
 
 async function checkUpdate() {
   const st = $('update-status')
@@ -1682,6 +1741,9 @@ $('btn-open-log-dir').addEventListener('click', () => {
   showPanel('logs')
 })
 $('btn-check-update').addEventListener('click', () => checkUpdate())
+$('btn-dist-save').addEventListener('click', () => saveDistUrl())
+$('btn-runtime-check').addEventListener('click', () => checkRuntimeUpdate())
+$('btn-runtime-install').addEventListener('click', () => installRuntime())
 $('model-select').addEventListener('change', async (e) => {
   const [provider, model] = String(e.target.value).split('::')
   if (!model) return
