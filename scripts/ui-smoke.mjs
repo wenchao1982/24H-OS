@@ -81,7 +81,22 @@ const RESP = {
     ]
   },
   configGet: { model: 'deepseek-chat' },
-  customEndpoints: []
+  customEndpoints: [],
+  uiInfo: {
+    appVersion: '0.1.0',
+    electronVersion: '40.10.2',
+    platform: 'linux-x64',
+    packaged: false,
+    paths: { userData: '/tmp/24h-userdata', hermesHome: '/tmp/24h-hermes', runtime: '/repo/runtime' }
+  },
+  runtimeInfo: { manifest: { coreVersion: '0.21.3', python: '3.12', layout: 'venv+core-source', builtAt: '2026-09-16T07:31:11Z' } },
+  health: { ok: true, version: '0.21.3' },
+  skillsList: { skills: { creative: ['baoyu-infographic', 'p5js'], devops: ['tmux'] }, total: 3 },
+  cronList: { jobs: [{ job_id: 'j1', name: '每日摘要', schedule: '0 9 * * *', deliver: 'chat' }], count: 1 },
+  insights: { days: 30, sessions: 12, messages: 148 },
+  usageBars: { ok: true, available: false },
+  sessionUsage: { context_percent: 12, context_used: 3400, context_max: 28000, total: 3400, calls: 3 },
+  runtimeCheck: { ok: true, provider: 'deepseek' }
 }
 
 const browser = await puppeteer.launch({
@@ -114,7 +129,7 @@ await wait(300)
 
 console.log(`\n== ${BEFORE ? '修复前（git HEAD）' : '修复后（工作区）'} ==`)
 check('启动时设置弹层是隐藏的', (await display('#settings')) === 'none', `display=${await display('#settings')}`)
-check('启动时文件面板是隐藏的', (await display('#files-panel')) === 'none', `display=${await display('#files-panel')}`)
+check('启动时右侧面板是隐藏的', (await display('#panel')) === 'none', `display=${await display('#panel')}`)
 check('启动时告警条是隐藏的', (await display('#banner')) === 'none', `display=${await display('#banner')}`)
 
 if (!BEFORE) {
@@ -160,11 +175,101 @@ check(
   JSON.stringify(md)
 )
 
+// 一级导航（技能 / 任务 / 用量 / 对话）
+await page.click('#nav-skills')
+await wait(250)
+const skillsView = await page.evaluate(() => ({
+  page: document.getElementById('page-skills').hidden,
+  chat: document.getElementById('chat-view').hidden,
+  rows: document.querySelectorAll('#skills-body .list-row').length,
+  summary: document.getElementById('skills-summary').textContent
+}))
+check('一级导航能切到「技能」页并列出技能', skillsView.page === false && skillsView.chat === true && skillsView.rows > 0, JSON.stringify(skillsView))
+
+await page.click('#nav-tasks')
+await wait(250)
+const tasksRows = await page.$$eval('#tasks-body .list-row', (n) => n.length)
+check('「任务」页列出定时任务', tasksRows > 0, `行数=${tasksRows}`)
+
+await page.click('#nav-usage')
+await wait(300)
+const usage = await page.evaluate(() => ({
+  stats: document.querySelectorAll('#usage-body .stat').length,
+  summary: document.getElementById('usage-summary').textContent
+}))
+check('「用量」页给出会话/消息统计', usage.stats >= 2, JSON.stringify(usage))
+
+await page.click('#nav-chat')
+await wait(200)
+check('能切回对话页', await page.$eval('#chat-view', (el) => !el.hidden))
+
+// 右侧面板：文件 / 预览 / 日志 三个标签
+await page.click('#btn-panel')
+await wait(250)
+const panel1 = await page.evaluate(() => ({
+  panel: !document.getElementById('panel').hidden,
+  files: !document.getElementById('pane-files').hidden,
+  logs: document.getElementById('pane-logs').hidden
+}))
+check('「面板」打开后默认在文件标签', panel1.panel && panel1.files && panel1.logs, JSON.stringify(panel1))
+await page.click('#tab-logs')
+await wait(150)
+const panel2 = await page.evaluate(() => ({
+  logs: !document.getElementById('pane-logs').hidden,
+  files: document.getElementById('pane-files').hidden
+}))
+check('面板能切到日志标签', panel2.logs && panel2.files, JSON.stringify(panel2))
+await page.click('#btn-panel-close')
+await wait(150)
+check('面板能收起', await page.$eval('#panel', (el) => el.hidden))
+
+// 命令面板（Ctrl/Cmd + K）
+await page.evaluate(() => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true, bubbles: true })))
+await wait(250)
+const pal = await page.evaluate(() => ({
+  open: !document.getElementById('palette').hidden,
+  items: document.querySelectorAll('#palette-list .palette-item').length
+}))
+check('Ctrl+K 能打开命令面板并列命令', pal.open && pal.items > 5, JSON.stringify(pal))
+await page.type('#palette-input', '主题')
+await wait(200)
+const palFiltered = await page.$$eval('#palette-list .palette-item .t', (n) => n.map((x) => x.textContent))
+check('命令面板能按关键词过滤', palFiltered.length > 0 && palFiltered.length < pal.items && palFiltered.every((t) => t.includes('主题')), palFiltered.join(' | '))
+await page.keyboard.press('Escape')
+await wait(150)
+check('Esc 能关掉命令面板', await page.$eval('#palette', (el) => el.hidden))
+
+// 设置分节
+await page.click('#btn-settings')
+await wait(300)
+const sec1 = await page.evaluate(() => {
+  const active = document.querySelector('#settings-nav button.active')
+  return { sec: active?.dataset.sec, panes: [...document.querySelectorAll('.settings-pane')].filter((p) => !p.hidden).map((p) => p.dataset.sec) }
+})
+check('设置默认停在「服务商与模型」分节', sec1.sec === 'model' && sec1.panes.length === 1, JSON.stringify(sec1))
+await page.click('#settings-nav button[data-sec="diagnostics"]')
+await wait(300)
+const sec2 = await page.evaluate(() => ({
+  panes: [...document.querySelectorAll('.settings-pane')].filter((p) => !p.hidden).map((p) => p.dataset.sec),
+  rows: document.querySelectorAll('#diag-list .kv').length,
+  text: document.getElementById('diag-list').textContent
+}))
+check('「诊断」分节列出核心版本 / 契约 / 运行时', sec2.panes[0] === 'diagnostics' && sec2.rows >= 6 && /0\.21\.3/.test(sec2.text), JSON.stringify(sec2).slice(0, 200))
+await page.click('#settings-nav button[data-sec="appearance"]')
+await wait(200)
+const sec3 = await page.evaluate(() => ({
+  panes: [...document.querySelectorAll('.settings-pane')].filter((p) => !p.hidden).map((p) => p.dataset.sec),
+  segs: document.querySelectorAll('#theme-seg button').length
+}))
+check('「外观」分节有三个主题选项', sec3.panes[0] === 'appearance' && sec3.segs === 3, JSON.stringify(sec3))
+await page.evaluate(() => document.getElementById('btn-close-settings-x').click())
+await wait(200)
+
 // IPC 返回值是 {ok,data}，忘了拆包就会显示 undefined（曾把「核心就绪」判成没就绪）
 const header = await page.$eval('#core-state', (el) => el.textContent)
 check('顶部核心状态有真值（不是 undefined）', /ready/.test(header) && !/undefined/.test(header), `“${header}”`)
-const runInfo = await page.$eval('#run-info', (el) => el.textContent)
-check('运行信息面板有真值（不是 undefined）', !/undefined/.test(runInfo), `“${runInfo}”`)
+const diag = await page.$eval('#diag-list', (el) => el.textContent)
+check('诊断面板有真值（不是 undefined）', diag.length > 20 && !/undefined/.test(diag), `“${diag.slice(0, 60)}…”`)
 
 // 打开设置 → 关闭的四个入口
 await page.click('#btn-settings')

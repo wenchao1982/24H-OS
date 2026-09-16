@@ -332,7 +332,10 @@ model 3   prompt 3   approval 3   voice 3   spawn_tree 3   process 3   …
 - **实现要点**：一期保持"目录树 + 文本/图片预览"（已做）；二期加"网页预览标签"（用 Electron 的 `WebContentsView` 或外链），**不**做完整浏览器。
 - **验收**：点开会话工作目录 → 列目录 → 预览 md/图片；越权路径要拒绝（待补：路径白名单/根目录约束）。
 
-### F6 设置与引导（M3）
+### F6 设置与引导（已完成）
+- **现状**：设置拆成五个分节（服务商与模型 / 外观 / 数据与目录 / 诊断 / 高级）；诊断分节列出
+  核心版本、桌面契约、运行时清单（coreVersion/commit/platform）、路径，并提供「复制诊断信息」。
+- **依据**：上游设置页是"短任务弹层"（`DESIGN.md` Information architecture）；排障必须能一键拿到现场信息。
 - **依据**：上游设置页含 provider/model/tools/credentials；我们设置页现在 5 个区块。
 - **待补**：语言切换（先 zh 固定）、数据目录位置显示与打开、日志导出、诊断信息一键复制（版本/运行时清单/契约版本）——**排障必需**。
 
@@ -348,13 +351,23 @@ model 3   prompt 3   approval 3   voice 3   spawn_tree 3   process 3   …
 ### F9 自动化（三期评估，不在 v1 范围）
 - 核心有 `cron.manage`、`subagent.*`、`handoff.*`；Studio 有可视化工作流。**先不做**——工作流的复杂度与"个人助手"定位不匹配，等有明确付费场景再说。
 
-### F10 更新（M3）
+### F10 更新（M3，壳侧已接线；差一个分发源）
 - **壳**：`electron-updater` + 自建静态源（国内对象存储；参照 Studio 的 `download.ekkolearnai.com` 与 `autoDownload=false`）。
 - **核心运行时**：走 §5.2 的清单 + 资产（参照 Studio 的 sha256 + manifest）。
 - **回滚**：更新后启动失败 → 自动退回上一份运行时目录（参照 Studio `migratePendingRuntimeRoot` 的"待用目录"思路）。
+- **现状（已完成的部分）**：`electron-updater` 已进 dependencies；「设置 → 高级 → 检查更新」在**没配更新源**时会
+  明确说"未配置更新源"（而不是报错）；运行时清单已带 `coreCommit` / `coreTreeSha256` / `platform`；
+  **运行时回退**已实现并实测：当前 `runtime/` 起不来时自动改用 `runtime.prev`（把坏的 runtime 和好的
+  runtime.prev 摆在一起，壳成功回退并启动，日志给出原因）。
+- **还差**：把 `build.publish` 指向自己的分发源（对象存储/CDN），并做一次真实的"装 v1 → 升 v2"验证。
 - **验收**：装 v1 → 升 v2 → 数据（会话/key）不丢；再升级一次运行时资产，核心版本号变化且 UI 不崩。
 
-### F11 托盘/多窗口（M4，可选）
+### F11 一级导航与命令面板（已完成，原计划在 §12 的 2、3 步）
+- 左轨：对话 / 技能 / 任务 / 用量 / 设置；技能 58 个按组分类，任务读 `cron.manage`，用量读 `insights.get`。
+- 命令面板 `Ctrl/Cmd + K`：28 条命令（含按模型动态生成的"切换模型"），支持过滤与键盘上下选择。
+- 契约比对发现并修掉一个真问题：渲染层原来监听 `turn.started`，而核心声明的是 `message.start` —— 等于回合开始事件一直没接上。
+
+### F12 托盘/多窗口（M4，可选）
 - 参照 Studio 的 `group-chat-agent-popup`、托盘图标族；上游有 `pet.*`（不做）。
 
 ---

@@ -65,6 +65,34 @@ const check = (name, ok, detail = '') => {
   check('助手回复走 Markdown 渲染', richSrc, richSrc ? 'renderRich + .md-* 样式齐' : '缺 renderRich 或 .md-* 样式：回复会显示裸 Markdown')
   // 不带 include_unconfigured=1 的话，全新安装只会拿到 moa/opencode-free 这类虚拟项，
   // 用户一填 key 就是 4002 unknown provider（实机踩过）
+  // 契约比对：我们调用的每个方法/事件，核心都声明过吗？（防"名字写错/核心升级改名"）
+  const contractFile = path.join(root, 'electron', 'contract.generated.json')
+  if (existsSync(contractFile)) {
+    const contract = JSON.parse(readFileSync(contractFile, 'utf8'))
+    const known = new Set(Object.keys(contract.methods ?? {}))
+    const usedMethods = [...mainJs.matchAll(/gwCall\('([^']+)'\)/g)].map((m) => m[1])
+    const missingMethods = [...new Set(usedMethods)].filter((m) => !known.has(m))
+    check(
+      `壳调用的 gateway 方法与核心契约一致（契约核心 ${contract.coreVersion ?? '?'}，${known.size} 个方法）`,
+      missingMethods.length === 0,
+      missingMethods.length ? `核心没声明：${missingMethods.join(', ')}` : `用到 ${new Set(usedMethods).size} 个，全部命中`
+    )
+    const knownEvents = new Set(contract.events ?? [])
+    const usedEvents = [...rendererSrc.matchAll(/case '([a-z][a-z._]+)':/g)].map((m) => m[1])
+    const missingEvents = [...new Set(usedEvents)].filter((e) => !knownEvents.has(e))
+    check(
+      '渲染层处理的事件都在核心契约里',
+      missingEvents.length === 0,
+      missingEvents.length ? `核心没声明：${missingEvents.join(', ')}` : `处理 ${new Set(usedEvents).size} 个事件，全部命中`
+    )
+  } else {
+    check('契约快照存在（node scripts/gen-contract.mjs 生成）', false, '缺 electron/contract.generated.json')
+  }
+
+  const pkgJson = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'))
+  const updaterDep = Boolean(pkgJson.dependencies?.['electron-updater'])
+  check('壳自更新依赖已声明（electron-updater）', updaterDep, updaterDep ? '在 dependencies 里' : 'package.json 的 dependencies 缺 electron-updater')
+
   const catalogOk = /include_unconfigured=1/.test(mainJs)
   check('模型目录带 include_unconfigured=1（否则只能看到虚拟 provider）', catalogOk, catalogOk ? '已带' : '缺：设置页会列出 moa 这类不能填 key 的项')
 }
@@ -73,6 +101,17 @@ const check = (name, ok, detail = '') => {
 // 默认必须落在临时目录里，绝不碰用户自己的 ~/.hermes。要用真实 home 就显式传 HERMES_HOME=。
 const hermesHome = process.env.HERMES_HOME || mkdtempSync(path.join(TMP, '24h-os-smoke-home-'))
 console.log(`核心 home：${hermesHome}${process.env.HERMES_HOME ? '（来自 HERMES_HOME）' : '（临时，跑完可删）'}`)
+
+// `npm run smoke -- --static`：只跑静态护栏（CI 的 Linux 容器里没有随包运行时，也能跑这一段）
+if (process.argv.includes('--static')) {
+  const failedStatic = results.filter((r) => !r.ok)
+  console.log(`\n静态护栏 ${results.length - failedStatic.length}/${results.length} 通过（已跳过需要核心的部分）`)
+  if (failedStatic.length) {
+    console.error('失败项：', failedStatic.map((f) => f.name).join('、'))
+    process.exit(1)
+  }
+  process.exit(0)
+}
 
 const runtime = new Runtime({
   appRoot: path.resolve(import.meta.dirname, '..'),

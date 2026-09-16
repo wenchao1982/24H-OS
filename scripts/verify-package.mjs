@@ -74,7 +74,11 @@ if (!unpacked || !existsSync(unpacked)) {
     if (!existsSync(core)) fail(`运行时里缺核心源码树：resources/runtime/core/hermes_cli`)
     const py = [path.join(runtimeDir, 'venv', 'Scripts', 'python.exe'), path.join(runtimeDir, 'venv', 'bin', 'python')].find(existsSync)
     if (!py) fail('运行时里缺 venv 解释器（venv/Scripts/python.exe 或 venv/bin/python）')
-    if (manifest) ok(`运行时清单：coreVersion=${manifest.coreVersion ?? '?'} python=${manifest.python ?? '?'} ref=${manifest.coreRef ?? '?'} layout=${manifest.layout ?? '?'}`)
+    if (manifest) {
+      ok(`运行时清单：coreVersion=${manifest.coreVersion ?? '?'} · commit=${(manifest.coreCommit ?? '').slice(0, 8) || '缺'} · python=${manifest.python ?? '?'} · platform=${manifest.platform ?? '?'}`)
+      if (!manifest.coreCommit) warn('清单里没有 coreCommit（用旧脚本构建的运行时；重跑 build-runtime 会补上）')
+      if (!manifest.coreTreeSha256) warn('清单里没有 coreTreeSha256（同上）')
+    }
 
     // 运行时光"文件在"还不够：venv 是可搬迁的（Windows 上 pyvenv.cfg 的 home 会指向构建机，
     // 搬了机器/目录就可能解释器起不来）。这里真的拉起来 import 一次核心包。

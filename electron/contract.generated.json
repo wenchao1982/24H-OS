@@ -1,0 +1,1655 @@
+{
+  "generatedAt": "2026-09-16T14:14:19.283Z",
+  "coreVersion": "0.21.3",
+  "coreDir": "runtime/core",
+  "counts": {
+    "methods": 217,
+    "events": 69,
+    "serverRequests": 12
+  },
+  "methods": {
+    "agents.list": {
+      "params": [
+        "profile"
+      ]
+    },
+    "approval.pending": {
+      "params": [
+        "profile",
+        "session_id"
+      ]
+    },
+    "approval.received": {
+      "params": [
+        "profile",
+        "request_id",
+        "session_id"
+      ]
+    },
+    "approval.respond": {
+      "params": [
+        "all",
+        "choice",
+        "profile",
+        "request_id",
+        "session_id"
+      ]
+    },
+    "billing.auto_reload": {
+      "params": [
+        "enabled",
+        "profile",
+        "threshold",
+        "top_up_amount"
+      ]
+    },
+    "billing.charge": {
+      "params": [
+        "amount_usd",
+        "idempotency_key",
+        "profile"
+      ]
+    },
+    "billing.charge_status": {
+      "params": [
+        "charge_id",
+        "profile"
+      ]
+    },
+    "billing.state": {
+      "params": [
+        "profile"
+      ]
+    },
+    "billing.step_up": {
+      "params": [
+        "profile",
+        "session_id"
+      ]
+    },
+    "bot_relay.deliver": {
+      "params": [
+        "from_connection",
+        "from_handle",
+        "from_profile",
+        "message",
+        "profile"
+      ]
+    },
+    "bot_relay.outbox.drain": {
+      "params": [
+        "profile"
+      ]
+    },
+    "bot_relay.reply": {
+      "params": [
+        "error",
+        "id",
+        "profile",
+        "reason",
+        "reply"
+      ]
+    },
+    "bot_relay.roster.sync": {
+      "params": [
+        "agents",
+        "profile"
+      ]
+    },
+    "browser.controller.detach": {
+      "params": [
+        "session_id"
+      ]
+    },
+    "browser.controller.heartbeat": {
+      "params": [
+        "session_id"
+      ]
+    },
+    "browser.controller.register": {
+      "params": [
+        "browser_profile_id",
+        "capabilities",
+        "controller_id",
+        "principal_id",
+        "protocol_version",
+        "session_id"
+      ]
+    },
+    "browser.controller.result": {
+      "params": [
+        "command_id",
+        "error",
+        "ok",
+        "result",
+        "session_id"
+      ]
+    },
+    "browser.manage": {
+      "params": [
+        "action",
+        "profile",
+        "session_id",
+        "url"
+      ]
+    },
+    "clarify.lock": {
+      "params": [
+        "answer",
+        "profile",
+        "question_id",
+        "request_id"
+      ]
+    },
+    "cli.exec": {
+      "params": [
+        "argv",
+        "profile",
+        "timeout"
+      ]
+    },
+    "clipboard.paste": {
+      "params": [
+        "profile",
+        "session_id"
+      ]
+    },
+    "command.dispatch": {
+      "params": [
+        "arg",
+        "name",
+        "profile",
+        "session_id"
+      ]
+    },
+    "command.resolve": {
+      "params": [
+        "name",
+        "profile"
+      ]
+    },
+    "commands.catalog": {
+      "params": [
+        "profile",
+        "session_id"
+      ]
+    },
+    "complete.path": {
+      "params": [
+        "cwd",
+        "profile",
+        "session_id",
+        "word"
+      ]
+    },
+    "complete.slash": {
+      "params": [
+        "text"
+      ]
+    },
+    "config.get": {
+      "params": [
+        "cwd",
+        "key",
+        "profile",
+        "session_id"
+      ]
+    },
+    "config.set": {
+      "params": [
+        "confirm_expensive_model",
+        "key",
+        "profile",
+        "scope",
+        "session_id",
+        "value"
+      ]
+    },
+    "config.show": {
+      "params": [
+        "profile"
+      ]
+    },
+    "connection.respond": {
+      "params": [
+        "op_id",
+        "profile",
+        "result",
+        "session_id"
+      ]
+    },
+    "connectors.connect": {
+      "params": [
+        "connectors",
+        "profile",
+        "reconnect",
+        "session_id"
+      ]
+    },
+    "connectors.list": {
+      "params": [
+        "profile",
+        "session_id"
+      ]
+    },
+    "connectors.operation.status": {
+      "params": [
+        "op_id",
+        "profile",
+        "session_id"
+      ]
+    },
+    "cron.manage": {
+      "params": [
+        "action",
+        "continuity",
+        "deliver",
+        "include_disabled",
+        "name",
+        "profile",
+        "prompt",
+        "repeat",
+        "schedule"
+      ]
+    },
+    "delegation.pause": {
+      "params": [
+        "paused",
+        "profile"
+      ]
+    },
+    "delegation.status": {
+      "params": [
+        "profile"
+      ]
+    },
+    "diagnostics.share_nous": {
+      "params": [
+        "error_context",
+        "extra_files",
+        "log_lines"
+      ]
+    },
+    "file.attach": {
+      "params": [
+        "data_url",
+        "name",
+        "path",
+        "profile",
+        "session_id"
+      ]
+    },
+    "free_tier.ack_notice": {
+      "params": [
+        "profile"
+      ]
+    },
+    "free_tier.provision": {
+      "params": [
+        "profile"
+      ]
+    },
+    "free_tier.status": {
+      "params": [
+        "profile"
+      ]
+    },
+    "gateway.capabilities": {
+      "params": []
+    },
+    "groups.approve": {
+      "params": [
+        "choice",
+        "execution_generation",
+        "member_id",
+        "profile",
+        "request_id",
+        "room_id",
+        "task_id"
+      ]
+    },
+    "groups.capabilities": {
+      "params": [
+        "profile"
+      ]
+    },
+    "groups.create": {
+      "params": [
+        "authority_gateway_id",
+        "members",
+        "name",
+        "profile",
+        "room_id"
+      ]
+    },
+    "groups.demote": {
+      "params": [
+        "observed_epoch",
+        "observed_gateway_id",
+        "profile",
+        "room_id"
+      ]
+    },
+    "groups.disband": {
+      "params": [
+        "cancel_id",
+        "profile",
+        "room_id"
+      ]
+    },
+    "groups.list": {
+      "params": [
+        "include_disbanded",
+        "limit",
+        "offset",
+        "profile"
+      ]
+    },
+    "groups.log": {
+      "params": [
+        "include_disbanded",
+        "limit",
+        "profile",
+        "room_id",
+        "since_seq"
+      ]
+    },
+    "groups.peer.invite": {
+      "params": [
+        "authority_epoch",
+        "authority_gateway_id",
+        "grant_id",
+        "home_install_id",
+        "member_id",
+        "profile",
+        "room_id",
+        "ttl_seconds"
+      ]
+    },
+    "groups.peer.register": {
+      "params": [
+        "cancellation_scope_id",
+        "catalog",
+        "grant",
+        "member_id",
+        "profile",
+        "room_id",
+        "target_profile",
+        "target_url",
+        "trace_id"
+      ]
+    },
+    "groups.peer.revoke": {
+      "params": [
+        "grant",
+        "profile"
+      ]
+    },
+    "groups.promote": {
+      "params": [
+        "confirm",
+        "profile",
+        "reason",
+        "room_id"
+      ]
+    },
+    "groups.rename": {
+      "params": [
+        "event_id",
+        "name",
+        "profile",
+        "room_id"
+      ]
+    },
+    "groups.replica_state": {
+      "params": [
+        "profile",
+        "room_id"
+      ]
+    },
+    "groups.replicate": {
+      "params": [
+        "members",
+        "page",
+        "profile",
+        "room_id",
+        "room_name"
+      ]
+    },
+    "groups.retry": {
+      "params": [
+        "profile",
+        "room_id",
+        "task_id"
+      ]
+    },
+    "groups.send": {
+      "params": [
+        "event_id",
+        "payload",
+        "profile",
+        "room_id"
+      ]
+    },
+    "groups.state": {
+      "params": [
+        "include_disbanded",
+        "profile",
+        "room_id"
+      ]
+    },
+    "groups.stop": {
+      "params": [
+        "cancel_id",
+        "profile",
+        "room_id"
+      ]
+    },
+    "handoff.fail": {
+      "params": [
+        "error",
+        "profile",
+        "session_id"
+      ]
+    },
+    "handoff.request": {
+      "params": [
+        "platform",
+        "profile",
+        "session_id"
+      ]
+    },
+    "handoff.state": {
+      "params": [
+        "profile",
+        "session_id"
+      ]
+    },
+    "image.attach": {
+      "params": [
+        "path",
+        "profile",
+        "session_id"
+      ]
+    },
+    "image.attach_bytes": {
+      "params": [
+        "content_base64",
+        "data",
+        "ext",
+        "filename",
+        "profile",
+        "session_id"
+      ]
+    },
+    "image.detach": {
+      "params": [
+        "path",
+        "profile",
+        "session_id"
+      ]
+    },
+    "image.generate": {
+      "params": [
+        "aspect_ratio",
+        "max_bytes",
+        "probe",
+        "prompt"
+      ]
+    },
+    "input.detect_drop": {
+      "params": [
+        "profile",
+        "session_id",
+        "text"
+      ]
+    },
+    "insights.get": {
+      "params": [
+        "days",
+        "profile"
+      ]
+    },
+    "learning.delete": {
+      "params": [
+        "id"
+      ]
+    },
+    "learning.detail": {
+      "params": [
+        "id"
+      ]
+    },
+    "learning.edit": {
+      "params": [
+        "content",
+        "id"
+      ]
+    },
+    "learning.frames": {
+      "params": [
+        "cols",
+        "frames",
+        "rows"
+      ]
+    },
+    "llm.oneshot": {
+      "params": [
+        "input",
+        "instructions",
+        "max_tokens",
+        "profile",
+        "session_id",
+        "task",
+        "temperature",
+        "template",
+        "variables"
+      ]
+    },
+    "mcp.catalog": {
+      "params": [
+        "profile"
+      ]
+    },
+    "mcp.servers.add": {
+      "params": [
+        "bearer_token",
+        "config",
+        "name",
+        "preset",
+        "profile"
+      ]
+    },
+    "mcp.servers.list": {
+      "params": [
+        "profile"
+      ]
+    },
+    "mcp.servers.oauth.callback": {
+      "params": [
+        "code",
+        "error",
+        "iss",
+        "name",
+        "profile",
+        "session_id",
+        "state"
+      ]
+    },
+    "mcp.servers.oauth.cancel": {
+      "params": [
+        "name",
+        "profile",
+        "session_id"
+      ]
+    },
+    "mcp.servers.oauth.poll": {
+      "params": [
+        "name",
+        "profile",
+        "session_id"
+      ]
+    },
+    "mcp.servers.oauth.start": {
+      "params": [
+        "client_redirect_uri",
+        "name",
+        "profile"
+      ]
+    },
+    "mcp.servers.remove": {
+      "params": [
+        "name",
+        "profile"
+      ]
+    },
+    "mcp.servers.set_api_key": {
+      "params": [
+        "env_var",
+        "name",
+        "profile",
+        "value"
+      ]
+    },
+    "mcp.servers.status": {
+      "params": [
+        "profile"
+      ]
+    },
+    "mcp.servers.test": {
+      "params": [
+        "name",
+        "profile"
+      ]
+    },
+    "message.react": {
+      "params": [
+        "author",
+        "emoji",
+        "newest_role",
+        "profile",
+        "row_id",
+        "session_id"
+      ]
+    },
+    "model.disconnect": {
+      "params": [
+        "session_id",
+        "slug"
+      ]
+    },
+    "model.options": {
+      "params": [
+        "explicit_only",
+        "include_unconfigured",
+        "profile",
+        "refresh",
+        "session_id"
+      ]
+    },
+    "model.save_key": {
+      "params": [
+        "api_key",
+        "session_id",
+        "slug"
+      ]
+    },
+    "paste.collapse": {
+      "params": [
+        "text"
+      ]
+    },
+    "pdf.attach": {
+      "params": [
+        "content_base64",
+        "data",
+        "filename",
+        "first_page",
+        "last_page",
+        "path",
+        "profile",
+        "session_id"
+      ]
+    },
+    "pet.cancel": {
+      "params": [
+        "profile",
+        "token"
+      ]
+    },
+    "pet.cells": {
+      "params": [
+        "cols",
+        "graphics",
+        "profile",
+        "state"
+      ]
+    },
+    "pet.disable": {
+      "params": [
+        "profile"
+      ]
+    },
+    "pet.export": {
+      "params": [
+        "profile",
+        "slug"
+      ]
+    },
+    "pet.gallery": {
+      "params": [
+        "localOnly",
+        "profile"
+      ]
+    },
+    "pet.generate": {
+      "params": [
+        "count",
+        "profile",
+        "prompt",
+        "provider",
+        "referenceImage",
+        "style"
+      ]
+    },
+    "pet.generate.status": {
+      "params": [
+        "profile"
+      ]
+    },
+    "pet.hatch": {
+      "params": [
+        "cancelToken",
+        "description",
+        "index",
+        "name",
+        "profile",
+        "prompt",
+        "provider",
+        "style",
+        "token"
+      ]
+    },
+    "pet.info": {
+      "params": [
+        "knownRevision",
+        "profile"
+      ]
+    },
+    "pet.info.meta": {
+      "params": [
+        "profile"
+      ]
+    },
+    "pet.remove": {
+      "params": [
+        "profile",
+        "slug"
+      ]
+    },
+    "pet.rename": {
+      "params": [
+        "name",
+        "profile",
+        "slug"
+      ]
+    },
+    "pet.scale": {
+      "params": [
+        "profile",
+        "scale"
+      ]
+    },
+    "pet.select": {
+      "params": [
+        "profile",
+        "slug"
+      ]
+    },
+    "pet.thumb": {
+      "params": [
+        "profile",
+        "slug",
+        "url"
+      ]
+    },
+    "ping": {
+      "params": []
+    },
+    "plugins.list": {
+      "params": []
+    },
+    "plugins.manage": {
+      "params": [
+        "action",
+        "catalog_name",
+        "enable",
+        "force",
+        "identifier",
+        "key",
+        "name",
+        "profile",
+        "ref",
+        "repo"
+      ]
+    },
+    "preview.restart": {
+      "params": [
+        "context",
+        "cwd",
+        "profile",
+        "session_id",
+        "url"
+      ]
+    },
+    "process.kill": {
+      "params": [
+        "process_id",
+        "profile",
+        "session_id"
+      ]
+    },
+    "process.list": {
+      "params": [
+        "profile",
+        "session_id"
+      ]
+    },
+    "process.stop": {
+      "params": [
+        "profile",
+        "session_id"
+      ]
+    },
+    "profiles.configure": {
+      "params": [
+        "confirm_expensive_model",
+        "description",
+        "disabled_skills",
+        "enabled_mcp_servers",
+        "enabled_toolsets",
+        "model",
+        "name",
+        "profile",
+        "provider",
+        "soul",
+        "ui_meta",
+        "ui_meta_expected_revisions"
+      ]
+    },
+    "profiles.create": {
+      "params": [
+        "clone_all",
+        "clone_channels",
+        "clone_from",
+        "description",
+        "mirror_credentials",
+        "model",
+        "name",
+        "no_alias",
+        "no_skills",
+        "profile",
+        "provider",
+        "share_auth",
+        "soul"
+      ]
+    },
+    "profiles.describe": {
+      "params": [
+        "name",
+        "profile"
+      ]
+    },
+    "profiles.get_asset": {
+      "params": [
+        "asset",
+        "name",
+        "profile"
+      ]
+    },
+    "profiles.list": {
+      "params": [
+        "include_sessions",
+        "profile"
+      ]
+    },
+    "profiles.remember_onboarding": {
+      "params": [
+        "answers",
+        "profile"
+      ]
+    },
+    "profiles.set_asset": {
+      "params": [
+        "asset",
+        "clear",
+        "data",
+        "name",
+        "profile"
+      ]
+    },
+    "project.facts": {
+      "params": [
+        "cwd",
+        "profile"
+      ]
+    },
+    "projects.add_folder": {
+      "params": [
+        "id",
+        "is_primary",
+        "label",
+        "path",
+        "profile"
+      ]
+    },
+    "projects.archive": {
+      "params": [
+        "id",
+        "profile",
+        "restore"
+      ]
+    },
+    "projects.create": {
+      "params": [
+        "board_slug",
+        "color",
+        "description",
+        "folders",
+        "icon",
+        "name",
+        "primary_path",
+        "profile",
+        "slug",
+        "use"
+      ]
+    },
+    "projects.delete": {
+      "params": [
+        "id",
+        "profile"
+      ]
+    },
+    "projects.discover_repos": {
+      "params": [
+        "profile",
+        "scan"
+      ]
+    },
+    "projects.for_cwd": {
+      "params": [
+        "cwd",
+        "profile"
+      ]
+    },
+    "projects.get": {
+      "params": [
+        "id",
+        "profile"
+      ]
+    },
+    "projects.list": {
+      "params": [
+        "profile"
+      ]
+    },
+    "projects.project_sessions": {
+      "params": [
+        "profile",
+        "project_id",
+        "session_limit"
+      ]
+    },
+    "projects.record_repos": {
+      "params": [
+        "discovery_policy",
+        "profile",
+        "repos"
+      ]
+    },
+    "projects.remove_folder": {
+      "params": [
+        "id",
+        "path",
+        "profile"
+      ]
+    },
+    "projects.set_active": {
+      "params": [
+        "id",
+        "profile"
+      ]
+    },
+    "projects.set_primary": {
+      "params": [
+        "id",
+        "path",
+        "profile"
+      ]
+    },
+    "projects.tree": {
+      "params": [
+        "preview_limit",
+        "profile",
+        "session_limit"
+      ]
+    },
+    "projects.update": {
+      "params": [
+        "board_slug",
+        "color",
+        "description",
+        "icon",
+        "id",
+        "name",
+        "profile"
+      ]
+    },
+    "prompt.background": {
+      "params": [
+        "profile",
+        "session_id",
+        "text"
+      ]
+    },
+    "prompt.btw": {
+      "params": [
+        "profile",
+        "session_id",
+        "text"
+      ]
+    },
+    "prompt.submit": {
+      "params": [
+        "_hosted_task",
+        "_hosted_terminal_callback",
+        "_turn_author",
+        "confirm_empty_truncate",
+        "confirm_truncate",
+        "display_kind",
+        "interrupted",
+        "profile",
+        "queued",
+        "rebind_survivor_row_ids",
+        "session_id",
+        "surface",
+        "text",
+        "truncate_before_message_id",
+        "truncate_before_row_id",
+        "truncate_before_user_ordinal",
+        "voice_context"
+      ]
+    },
+    "reload.env": {
+      "params": []
+    },
+    "reload.mcp": {
+      "params": [
+        "always",
+        "confirm",
+        "rev",
+        "session_id"
+      ]
+    },
+    "request.answer": {
+      "params": [
+        "id",
+        "profile",
+        "result"
+      ]
+    },
+    "rollback.diff": {
+      "params": [
+        "hash",
+        "profile",
+        "session_id"
+      ]
+    },
+    "rollback.list": {
+      "params": [
+        "profile",
+        "session_id"
+      ]
+    },
+    "rollback.restore": {
+      "params": [
+        "file_path",
+        "hash",
+        "profile",
+        "session_id"
+      ]
+    },
+    "session.activate": {
+      "params": [
+        "cols",
+        "omit_messages",
+        "profile",
+        "session_id"
+      ]
+    },
+    "session.active_list": {
+      "params": [
+        "current_session_id",
+        "profile"
+      ]
+    },
+    "session.branch": {
+      "params": [
+        "count",
+        "name",
+        "profile",
+        "session_id"
+      ]
+    },
+    "session.close": {
+      "params": [
+        "profile",
+        "session_id"
+      ]
+    },
+    "session.compress": {
+      "params": [
+        "focus_topic",
+        "profile",
+        "session_id"
+      ]
+    },
+    "session.context_breakdown": {
+      "params": [
+        "profile",
+        "session_id"
+      ]
+    },
+    "session.control": {
+      "params": [
+        "action",
+        "args",
+        "profile",
+        "session_id"
+      ]
+    },
+    "session.control.read": {
+      "params": [
+        "profile",
+        "session_id"
+      ]
+    },
+    "session.create": {
+      "params": [
+        "close_on_disconnect",
+        "cols",
+        "cwd",
+        "fast",
+        "follow_profile_config",
+        "hidden",
+        "messages",
+        "model",
+        "parent_session_id",
+        "profile",
+        "provider",
+        "reasoning_effort",
+        "room_plumbing",
+        "source",
+        "title"
+      ]
+    },
+    "session.cwd.set": {
+      "params": [
+        "cwd",
+        "profile",
+        "session_id"
+      ]
+    },
+    "session.delete": {
+      "params": [
+        "profile",
+        "session_id"
+      ]
+    },
+    "session.events.since": {
+      "params": [
+        "last_seen",
+        "profile",
+        "session_id"
+      ]
+    },
+    "session.events.stats": {
+      "params": [
+        "profile"
+      ]
+    },
+    "session.foreign.import": {
+      "params": [
+        "id",
+        "profile"
+      ]
+    },
+    "session.foreign.list": {
+      "params": [
+        "limit",
+        "offset",
+        "profile",
+        "source"
+      ]
+    },
+    "session.foreign.preview": {
+      "params": [
+        "id",
+        "profile"
+      ]
+    },
+    "session.history": {
+      "params": [
+        "profile",
+        "session_id"
+      ]
+    },
+    "session.interrupt": {
+      "params": [
+        "expected_hosted_task_id",
+        "profile",
+        "session_id"
+      ]
+    },
+    "session.list": {
+      "params": [
+        "include_hidden",
+        "limit",
+        "profile",
+        "title"
+      ]
+    },
+    "session.most_recent": {
+      "params": [
+        "profile"
+      ]
+    },
+    "session.redirect": {
+      "params": [
+        "profile",
+        "session_id",
+        "text"
+      ]
+    },
+    "session.resume": {
+      "params": [
+        "close_on_disconnect",
+        "cols",
+        "defer_history",
+        "eager_build",
+        "lazy",
+        "omit_messages",
+        "profile",
+        "session_id",
+        "source"
+      ]
+    },
+    "session.save": {
+      "params": [
+        "profile",
+        "session_id"
+      ]
+    },
+    "session.set_hidden": {
+      "params": [
+        "hidden",
+        "profile",
+        "session_id"
+      ]
+    },
+    "session.status": {
+      "params": [
+        "profile",
+        "session_id"
+      ]
+    },
+    "session.steer": {
+      "params": [
+        "profile",
+        "session_id",
+        "text"
+      ]
+    },
+    "session.title": {
+      "params": [
+        "profile",
+        "session_id",
+        "title"
+      ]
+    },
+    "session.undo": {
+      "params": [
+        "profile",
+        "session_id"
+      ]
+    },
+    "session.usage": {
+      "params": [
+        "profile",
+        "session_id"
+      ]
+    },
+    "session.workspace.move": {
+      "params": [
+        "cwd",
+        "profile",
+        "session_key"
+      ]
+    },
+    "setup.runtime_check": {
+      "params": [
+        "profile",
+        "provider"
+      ]
+    },
+    "setup.status": {
+      "params": [
+        "profile"
+      ]
+    },
+    "shell.exec": {
+      "params": [
+        "command",
+        "profile"
+      ]
+    },
+    "skills.manage": {
+      "params": [
+        "action",
+        "page",
+        "page_size",
+        "profile",
+        "query"
+      ]
+    },
+    "skills.reload": {
+      "params": []
+    },
+    "slash.exec": {
+      "params": [
+        "command",
+        "profile",
+        "session_id"
+      ]
+    },
+    "spawn_tree.list": {
+      "params": [
+        "cross_session",
+        "limit",
+        "profile",
+        "session_id"
+      ]
+    },
+    "spawn_tree.load": {
+      "params": [
+        "path",
+        "profile"
+      ]
+    },
+    "spawn_tree.save": {
+      "params": [
+        "finished_at",
+        "label",
+        "profile",
+        "session_id",
+        "started_at",
+        "subagents"
+      ]
+    },
+    "subagent.interrupt": {
+      "params": [
+        "profile",
+        "session_id",
+        "subagent_id"
+      ]
+    },
+    "subagent.list": {
+      "params": [
+        "profile",
+        "session_id"
+      ]
+    },
+    "subagent.steer": {
+      "params": [
+        "profile",
+        "session_id",
+        "subagent_id",
+        "text"
+      ]
+    },
+    "subagent.tail": {
+      "params": [
+        "profile",
+        "session_id",
+        "subagent_id"
+      ]
+    },
+    "subscription.change": {
+      "params": [
+        "cancel",
+        "profile",
+        "subscription_type_id"
+      ]
+    },
+    "subscription.preview": {
+      "params": [
+        "profile",
+        "subscription_type_id"
+      ]
+    },
+    "subscription.resume": {
+      "params": [
+        "profile"
+      ]
+    },
+    "subscription.state": {
+      "params": [
+        "profile"
+      ]
+    },
+    "subscription.upgrade": {
+      "params": [
+        "idempotency_key",
+        "profile",
+        "subscription_type_id"
+      ]
+    },
+    "system.battery": {
+      "params": [
+        "profile"
+      ]
+    },
+    "terminal.resize": {
+      "params": [
+        "cols",
+        "profile",
+        "session_id"
+      ]
+    },
+    "tools.configure": {
+      "params": [
+        "action",
+        "names",
+        "profile",
+        "session_id"
+      ]
+    },
+    "tools.list": {
+      "params": [
+        "session_id"
+      ]
+    },
+    "tools.show": {
+      "params": [
+        "session_id"
+      ]
+    },
+    "toolsets.list": {
+      "params": [
+        "session_id"
+      ]
+    },
+    "usage.bars": {
+      "params": [
+        "profile"
+      ]
+    },
+    "vault.add": {
+      "params": [
+        "kind",
+        "label",
+        "origin",
+        "profile",
+        "secret"
+      ]
+    },
+    "vault.list": {
+      "params": [
+        "profile"
+      ]
+    },
+    "vault.lock": {
+      "params": [
+        "name",
+        "profile"
+      ]
+    },
+    "vault.remove": {
+      "params": [
+        "id",
+        "profile"
+      ]
+    },
+    "vault.source.set": {
+      "params": [
+        "enabled",
+        "name",
+        "profile"
+      ]
+    },
+    "vault.sources": {
+      "params": [
+        "profile"
+      ]
+    },
+    "vault.unlock": {
+      "params": [
+        "name",
+        "password",
+        "profile"
+      ]
+    },
+    "verification.status": {
+      "params": [
+        "cwd",
+        "profile",
+        "session_id",
+        "session_key"
+      ]
+    },
+    "voice.record": {
+      "params": [
+        "action",
+        "profile",
+        "session_id"
+      ]
+    },
+    "voice.toggle": {
+      "params": [
+        "action",
+        "profile"
+      ]
+    },
+    "voice.tts": {
+      "params": [
+        "profile",
+        "text"
+      ]
+    },
+    "wake.feed": {
+      "params": [
+        "pcm",
+        "pcm_b64",
+        "profile",
+        "sample_rate"
+      ]
+    },
+    "wake.pause": {
+      "params": [
+        "profile"
+      ]
+    },
+    "wake.resume": {
+      "params": [
+        "profile"
+      ]
+    },
+    "wake.start": {
+      "params": [
+        "client_capture",
+        "persist",
+        "profile",
+        "session_id",
+        "surface"
+      ]
+    },
+    "wake.status": {
+      "params": [
+        "client_capture",
+        "profile",
+        "surface"
+      ]
+    },
+    "wake.stop": {
+      "params": [
+        "persist",
+        "profile"
+      ]
+    }
+  },
+  "events": [
+    "agent.terminal.output",
+    "background.complete",
+    "billing.step_up.verification",
+    "bot_relay.outbox.pending",
+    "browser.controller.cancel",
+    "browser.controller.command",
+    "browser.progress",
+    "btw.complete",
+    "connection.request",
+    "connection.update",
+    "cron.changed",
+    "error",
+    "gateway.ready",
+    "layout.apply",
+    "message.complete",
+    "message.delta",
+    "message.interim",
+    "message.reaction",
+    "message.start",
+    "moa.aggregating",
+    "moa.phase",
+    "moa.progress",
+    "moa.reference",
+    "notice",
+    "notification.clear",
+    "notification.show",
+    "pairing.changed",
+    "pane.reveal",
+    "pet.changed",
+    "pet.generate.progress",
+    "pet.hatch.progress",
+    "platforms.changed",
+    "preview.close",
+    "preview.open",
+    "preview.restart.complete",
+    "preview.restart.progress",
+    "reaction",
+    "reasoning.available",
+    "reasoning.delta",
+    "request.cancel",
+    "review.summary",
+    "session.control.update",
+    "session.info",
+    "session.reclaimed",
+    "session.resume_progress",
+    "session.title",
+    "session.usage",
+    "sessions.changed",
+    "setup.ready",
+    "skin.changed",
+    "status.update",
+    "subagent.complete",
+    "subagent.progress",
+    "subagent.spawn_requested",
+    "subagent.start",
+    "subagent.thinking",
+    "subagent.tool",
+    "terminal.close",
+    "thinking.delta",
+    "tip.show",
+    "todo.updated",
+    "tool.complete",
+    "tool.generating",
+    "tool.output_risk",
+    "tool.start",
+    "voice.interrupted",
+    "voice.status",
+    "voice.transcript",
+    "wake.detected"
+  ],
+  "serverRequests": [
+    "approval",
+    "clarify",
+    "preview.act",
+    "preview.read",
+    "secret",
+    "sudo",
+    "terminal.read",
+    "tour",
+    "vault.code",
+    "vault.save_login",
+    "vault.unlock_prompt",
+    "window.read"
+  ]
+}

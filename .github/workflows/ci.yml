@@ -1,0 +1,49 @@
+# CI：把"能机械验证的部分"固化下来。
+# 刻意分成两个 job：
+#   static —— 不需要核心运行时（静态护栏 + 契约比对），任何 runner 都能跑
+#   ui     —— 不需要图形界面：下 chrome-headless-shell 跑真浏览器渲染检查
+# （需要核心的端到端冒烟跑在开发机/打包机上：npm run smoke，见 docs/WINDOWS.md）
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  static:
+    name: 静态护栏（含契约比对）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: 安装依赖（跳过 electron 的 postinstall：这里不需要二进制）
+        run: npm ci --ignore-scripts
+      - name: 静态护栏
+        run: node scripts/smoke.mjs --static
+
+  ui:
+    name: 界面层（无头浏览器）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: 安装依赖
+        run: |
+          npm ci --ignore-scripts
+          npm i --no-save puppeteer-core --registry=https://registry.npmmirror.com --no-audit --no-fund
+      - name: 下载 chrome-headless-shell（国内镜像，不需要图形环境）
+        run: |
+          curl -sL -o /tmp/hs.zip https://cdn.npmmirror.com/binaries/chrome-for-testing/141.0.7390.65/linux64/chrome-headless-shell-linux64.zip
+          unzip -q /tmp/hs.zip -d /tmp/chrome
+      - name: 界面层冒烟
+        run: CHROME=/tmp/chrome/chrome-headless-shell-linux64/chrome-headless-shell node scripts/ui-smoke.mjs

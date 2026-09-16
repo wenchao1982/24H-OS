@@ -20,7 +20,12 @@ electron/gateway.js   WS JSON-RPC 通道：调用/事件/自动重连（对话�
 electron/main.js      主进程：开窗、启动核心、建立通道、IPC 白名单、退出收尾
 electron/preload.cjs  预加载：暴露最小 window.hermes API 面（**必须 CJS**，见文件头注释）
 src/                  渲染进程：会话列表 + 对话流（流式）+ 模型选择 + 设置（无 Node 权限）
-scripts/smoke.mjs     无界面冒烟测试（协议层端到端）
+scripts/smoke.mjs     无界面冒烟测试（协议层端到端；`-- --static` 只跑静态护栏，CI 用）
+scripts/ui-smoke.mjs  界面层冒烟（无头浏览器真渲染 index.html）
+scripts/after-pack.mjs / verify-package.mjs   打包时与打包后的自检
+scripts/gen-contract.mjs      从核心抓契约快照 → electron/contract.generated.json
+scripts/make-icons.py         从 build/icon.png 生成 build/icon.ico
+.github/workflows/ci.yml       CI：静态护栏 + 契约比对 + 界面层冒烟
 ```
 
 ## 功能
@@ -35,12 +40,20 @@ scripts/smoke.mjs     无界面冒烟测试（协议层端到端）
 - 运行状态：核心状态点、端口、WS 通道状态、可展开的核心日志抽屉
 - 健壮性：桌面契约版本对齐告警、未配模型引导、会话工作目录
 
-**M3（界面与外观）**
+**M3（界面与信息架构）**
 
 - 设计系统：`src/styles.css` 单文件 token 化（颜色/圆角/间距/阴影/层级），深色 + 浅色两套，
-  默认跟随系统，右上「外观」一键切换（偏好存在壳的 `userData/ui-prefs.json`，不碰核心配置）
-- 助手回复走 Markdown 渲染（围栏代码块、表格、列表、引用、行内码、粗体、链接），流式过程中走纯文本、一轮结束再排版
-- 空 / 错 / 加载三态齐全；文件图标用 CSS 画（不依赖 emoji 字体）
+  默认跟随系统；「设置 → 外观」与顶栏按钮、命令面板共用同一处状态（偏好存壳的 `userData/ui-prefs.json`）
+- **一级导航**：对话 / 技能 / 任务 / 用量 / 设置 —— 技能列核心的 58 个技能（按组中文分类）、
+  任务读 `cron.manage`、用量读 `insights.get`
+- **右侧面板合流**：文件 / 预览 / 日志 三个标签（原来文件在右栏、日志在底部抽屉，位置不统一）
+- **命令面板（Ctrl/Cmd + K）**：把新建会话、切模型、开关面板、切主题、导出、撤销、分叉、诊断复制、
+  重启核心、检查更新等动作收进一个可搜索列表（动作与界面按钮共用同一批函数）
+- **设置分五个分节**：服务商与模型 / 外观 / 数据与目录 / 诊断 / 高级（自定义端点、更新、重启核心）
+- 助手回复走 Markdown 渲染（围栏代码块、表格、列表、引用、行内码、粗体、链接）
+- 会话行「⋯」是**系统原生菜单**（重命名 / 复制 id / 导出 Markdown / 分叉 / 撤销上一轮 / 删除）
+- 输入区上方显示**上下文用量**（`session.usage`：占比、tokens、成本、tok/s），核心推 `session.usage` 事件时自动更新
+- 错误提示中文化：未配模型 / 会话被回收 / Key 失效 / 限流 / 网络不通 / 余额不足 都有对应人话
 
 **M2（会话与文件）**
 
@@ -150,10 +163,12 @@ HERMES_RUNTIME_PYTHON=/path/to/hermes/venv/bin/python npm run probe
 ## 自检
 
 ```bash
-npm run smoke     # 无图形环境也能跑：启动核心 → token → WS → 会话 → 发消息 → 事件闭环 → 恢复路径
-npm run probe     # 更轻量：只验证核心启动 + 健康检查 + 一次鉴权调用
-npm run ui-smoke  # 界面层：用 chrome-headless-shell 打开 src/index.html，验「藏得住/关得掉/加载得上」
-npm run verify:package    # 打包后：asar / 随包运行时能不能真的跑起来 / 安装包名字与 sha256
+npm run smoke              # 无图形环境也能跑：启动核心 → token → WS → 会话 → 发消息 → 事件闭环 → 恢复路径
+npm run smoke -- --static  # 只跑静态护栏（含与核心契约的比对），CI 用，不需要运行时
+npm run probe              # 更轻量：只验证核心启动 + 健康检查 + 一次鉴权调用
+npm run ui-smoke           # 界面层：用 chrome-headless-shell 打开 src/index.html，验导航/面板/命令面板/设置分节
+npm run verify:package     # 打包后：asar / 随包运行时能不能真的跑起来 / 安装包名字与 sha256
+node scripts/gen-contract.mjs     # 重新抓核心契约（升级核心后跑一次）
 node scripts/contract-probe.mjs   # 契约体检：核心到底给我们开放了哪些方法（含账号/计费）
 ```
 

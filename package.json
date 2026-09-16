@@ -82,5 +82,8 @@
   "allowScripts": {
     "electron@40.10.2": true,
     "electron-winstaller@5.4.0": true
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.9"
   }
 }

@@ -167,17 +167,8 @@ Write-Host ("    核心就绪，端口 {0}" -f $port)
 # ── 7. 元数据 ───────────────────────────────────────────────────────────────
 $bytes = (Get-ChildItem $Runtime -Recurse -Force -File | Measure-Object -Property Length -Sum).Sum
 $sizeMB = [math]::Round($bytes / 1MB, 0)
-$meta = [ordered]@{
-  schema      = 1
-  coreRef     = $Ref
-  coreVersion = $coreVer
-  builtAt     = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
-  python      = $pyInfo.Ver
-  pipMirror   = $Mirror
-  layout      = "venv+core-source"
-  platform    = "win32"
-} | ConvertTo-Json -Compress
-$meta | Set-Content -Encoding UTF8 (Join-Path $Runtime ".24h-os-runtime.json")
+# 清单统一由 write-runtime-manifest.ps1 生成（coreCommit / 源码树指纹 / platform 都在那）
+& (Join-Path $PSScriptRoot "write-runtime-manifest.ps1") -Runtime $Runtime -Ref $Ref -CoreVersion $coreVer -PythonVersion $pyInfo.Ver -Mirror $Mirror
 
 Write-Host ("==> 完成：{0}（约 {1} MB）" -f $Runtime, $sizeMB)
 Write-Host ""

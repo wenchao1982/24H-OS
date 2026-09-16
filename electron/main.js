@@ -3,7 +3,7 @@
  *
  * 分工：主进程持有 python 子进程与 WebSocket，渲染进程只通过 IPC 调方法、收事件。
  */
-import { BrowserWindow, app, dialog, ipcMain, shell } from 'electron'
+import { BrowserWindow, Menu, app, clipboard, dialog, ipcMain, shell } from 'electron'
 import fs from 'node:fs'
 import path from 'node:path'
 import { Gateway } from './gateway.js'
@@ -66,6 +66,11 @@ async function connectGateway() {
   send('gateway:status', { connected: true, authRequired: Boolean(token) })
 }
 
+/** 启动阶段进度（渲染层的"启动中"页据此显示步骤） */
+function bootProgress(stage, message) {
+  send('boot:progress', { stage, message })
+}
+
 async function startRuntime() {
   runtime = new Runtime({
     appRoot: app.getAppPath(),
@@ -79,10 +84,15 @@ async function startRuntime() {
   })
 
   try {
+    bootProgress('spawn', '正在定位运行时并启动核心进程…')
     const port = await runtime.start()
     lastState = { phase: 'ready', port, baseUrl: runtime.baseUrl }
-    send('runtime:ready', { port, baseUrl: runtime.baseUrl })
+    bootProgress('ready', `核心就绪（端口 ${port}）`)
     await connectGateway()
+    bootProgress('gateway', '实时通道已连接')
+    send('runtime:ready', { port, baseUrl: runtime.baseUrl })
+    bootProgress('data', '正在读取会话与模型…')
+    setTimeout(() => bootProgress('done', '就绪'), 800)
   } catch (err) {
     lastState = { phase: 'failed', message: err.message }
     send('runtime:error', { message: err.message })
@@ -158,6 +168,9 @@ handle('providers:customEndpointUpsert', (payload) =>
 handle('config:get', () => runtime.request('GET', '/api/config'))
 handle('config:set', (payload) => runtime.request('PUT', '/api/config', payload?.config ?? payload))
 handle('gateway:capabilities', gwCall('gateway.capabilities'))
+handle('session:usage', gwCall('session.usage'))
+handle('session:undo', gwCall('session.undo'))
+handle('session:branch', gwCall('session.branch'))
 handle('session:delete', gwCall('session.delete'))
 handle('session:close', gwCall('session.close'))
 
@@ -191,7 +204,110 @@ handle('ui:prefs:set', (patch) => {
   return next
 })
 
+// 技能 / 定时任务 / 用量（一级导航的三个页面）
+handle('skills:list', gwCall('skills.manage'))
+handle('cron:list', gwCall('cron.manage'))
+handle('insights:get', gwCall('insights.get'))
+handle('usage:bars', gwCall('usage.bars'))
+handle('setup:runtimeCheck', gwCall('setup.runtime_check'))
+
 handle('open:external', (url) => shell.openExternal(String(url)))
+
+// ── 壳信息（诊断页/数据目录页用）──────────────────────────────────────────
+handle('ui:info', () => ({
+  appVersion: app.getVersion(),
+  electronVersion: process.versions.electron,
+  chromeVersion: process.versions.chrome,
+  platform: `${process.platform}-${process.arch}`,
+  packaged: app.isPackaged,
+  paths: {
+    userData: app.getPath('userData'),
+    hermesHome: process.env.HERMES_HOME || path.join(app.getPath('userData'), 'hermes'),
+    runtime: runtime?.describe?.() ?? null,
+    logs: path.join(app.getPath('userData'), 'logs')
+  }
+}))
+handle('ui:openPath', async (target) => {
+  const dir = String(target || '')
+  if (!dir) throw new Error('没有可打开的路径')
+  const stat = fs.existsSync(dir) ? fs.statSync(dir) : null
+  const res = await shell.openPath(stat && stat.isFile() ? path.dirname(dir) : dir)
+  if (res) throw new Error(res)
+  return { opened: dir }
+})
+handle('ui:copyText', (text) => {
+  clipboard.writeText(String(text ?? ''))
+  return { copied: true, length: String(text ?? '').length }
+})
+handle('ui:saveText', async (payload) => {
+  const def = payload?.defaultName || 'export.md'
+  const res = await dialog.showSaveDialog(win, { defaultPath: path.join(app.getPath('documents'), def) })
+  if (res.canceled || !res.filePath) return { canceled: true }
+  fs.writeFileSync(res.filePath, String(payload?.content ?? ''), 'utf8')
+  return { canceled: false, path: res.filePath }
+})
+
+// 原生右键/更多菜单：渲染层给动作，壳负责弹出（不用在渲染层算坐标、不写内联样式）
+handle('ui:contextMenu', (items) => {
+  const list = Array.isArray(items) ? items : []
+  if (!list.length) return { id: null }
+  return new Promise((resolve) => {
+    let picked = null
+    const menu = Menu.buildFromTemplate(
+      list.map((i) => ({
+        label: String(i.label ?? ''),
+        enabled: i.enabled !== false,
+        click: () => {
+          picked = String(i.id)
+        }
+      }))
+    )
+    menu.popup({
+      window: win ?? undefined,
+      callback: () => resolve({ id: picked })
+    })
+  })
+})
+
+// 运行时清单（诊断页显示核心版本/构建时间/layout）
+handle('runtime:info', () => {
+  const candidates = [
+    path.join(process.resourcesPath ?? '', 'runtime', '.24h-os-runtime.json'),
+    path.join(app.getAppPath(), 'runtime', '.24h-os-runtime.json')
+  ]
+  for (const file of candidates) {
+    try {
+      if (fs.existsSync(file)) return { manifest: JSON.parse(fs.readFileSync(file, 'utf8')), path: file }
+    } catch (err) {
+      return { error: `清单读不动：${err.message}`, path: file }
+    }
+  }
+  return { manifest: null }
+})
+
+// 壳自更新：没装 electron-updater 或没配更新源时给出人话，而不是让界面报错
+handle('ui:updateCheck', async () => {
+  if (!app.isPackaged) return { available: false, message: '开发模式不检查更新' }
+  const configFile = path.join(process.resourcesPath ?? '', 'app-update.yml')
+  if (!fs.existsSync(configFile)) {
+    return { available: false, message: '未配置更新源（发版时在 package.json 的 build.publish 里填上，然后重新打包）' }
+  }
+  let updater
+  try {
+    // electron-updater 是 CJS，且 autoUpdater 是个惰性 getter（要 Electron 的 app 才能实例化）
+    updater = (await import('electron-updater')).autoUpdater
+  } catch (err) {
+    return { available: false, message: `更新组件不可用：${err.message}（缺依赖就 npm i electron-updater）` }
+  }
+  try {
+    const res = await updater.checkForUpdates()
+    const latest = res?.updateInfo?.version
+    const available = Boolean(latest) && latest !== app.getVersion()
+    return { available, version: latest, message: available ? `发现新版本 ${latest}` : '已是最新版本' }
+  } catch (err) {
+    return { available: false, message: `检查更新失败：${err.message}` }
+  }
+})
 
 // 原生目录选择（会话的工作目录）
 handle('dialog:pickDir', async () => {

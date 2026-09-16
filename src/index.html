@@ -19,17 +19,27 @@
 
       <div class="spacer"></div>
 
+      <button class="icon" id="btn-palette" title="命令面板（Ctrl/Cmd + K）">⌘K 命令</button>
       <select class="chip" id="model-select" title="默认模型">
         <option value="">模型：读取中…</option>
       </select>
-      <button class="icon" id="btn-files" title="文件面板">文件</button>
-      <button class="icon" id="btn-logs" title="核心日志">日志</button>
+      <button class="icon" id="btn-panel" title="右侧面板（文件 / 预览 / 日志）">面板</button>
       <button class="icon" id="btn-theme" title="切换深色 / 浅色">外观</button>
       <button class="icon" id="btn-settings" title="设置">设置</button>
     </header>
 
-    <main>
-      <aside>
+    <main id="shell" data-view="chat">
+      <!-- 一级导航 -->
+      <nav class="rail" id="rail">
+        <button class="rail-btn active" id="nav-chat" data-view="chat" title="对话">对话</button>
+        <button class="rail-btn" id="nav-skills" data-view="skills" title="技能">技能</button>
+        <button class="rail-btn" id="nav-tasks" data-view="tasks" title="任务">任务</button>
+        <button class="rail-btn" id="nav-usage" data-view="usage" title="用量">用量</button>
+        <button class="rail-btn rail-btn-end" id="nav-settings" title="设置">设置</button>
+      </nav>
+
+      <!-- 会话栏（仅对话页） -->
+      <aside class="side" id="side">
         <div class="side-head">
           <button class="primary" id="btn-new">新建会话</button>
           <button class="icon" id="btn-refresh" title="刷新会话列表">刷新</button>
@@ -40,88 +50,202 @@
         <div class="sessions" id="sessions"></div>
       </aside>
 
-      <aside class="files" id="files-panel" hidden>
-        <div class="side-head">
-          <span id="files-path" class="path">—</span>
-          <button class="icon" id="btn-files-up" title="上一级">↑</button>
-          <button class="icon" id="btn-files-refresh" title="刷新">⟳</button>
-        </div>
-        <div class="entries" id="entries"></div>
-        <div class="preview" id="preview" hidden></div>
-      </aside>
-
-      <section class="chat">
+      <!-- 对话页 -->
+      <section class="chat" id="chat-view">
         <div class="banner" id="banner" hidden></div>
         <div class="thread" id="thread"></div>
         <div class="composer">
           <div class="box">
-            <textarea id="input" placeholder="输入消息…（Enter 发送，Shift+Enter 换行）"></textarea>
+            <textarea id="input" placeholder="输入消息…（Enter 发送，Shift+Enter 换行，Ctrl/Cmd+K 命令面板）"></textarea>
             <div class="row">
               <button class="primary" id="btn-send">发送</button>
               <button class="danger" id="btn-stop" hidden>停止生成</button>
               <span id="turn-state"></span>
               <span class="spacer"></span>
+              <span id="context-usage" title="本轮上下文用量"></span>
               <span id="session-label"></span>
               <button class="icon" id="btn-cwd" title="选择工作目录"><span id="cwd-label">工作目录</span></button>
             </div>
           </div>
         </div>
-        <div class="drawer" id="drawer" hidden></div>
       </section>
+
+      <!-- 其它页（技能 / 任务 / 用量） -->
+      <section class="page" id="page-skills" hidden>
+        <div class="page-head"><h2>技能</h2><span class="hint" id="skills-summary"></span></div>
+        <div class="page-body" id="skills-body"></div>
+      </section>
+      <section class="page" id="page-tasks" hidden>
+        <div class="page-head"><h2>定时任务</h2><span class="hint" id="tasks-summary"></span></div>
+        <div class="page-body" id="tasks-body"></div>
+      </section>
+      <section class="page" id="page-usage" hidden>
+        <div class="page-head"><h2>用量</h2><span class="hint" id="usage-summary"></span></div>
+        <div class="page-body" id="usage-body"></div>
+      </section>
+
+      <!-- 右侧面板：文件 / 预览 / 日志 三合一 -->
+      <aside class="panel" id="panel" hidden>
+        <div class="panel-tabs">
+          <button class="tab active" id="tab-files" data-tab="files">文件</button>
+          <button class="tab" id="tab-preview" data-tab="preview">预览</button>
+          <button class="tab" id="tab-logs" data-tab="logs">日志</button>
+          <span class="spacer"></span>
+          <button class="icon" id="btn-panel-close" title="收起面板">✕</button>
+        </div>
+
+        <div class="panel-tab" id="pane-files">
+          <div class="side-head">
+            <span id="files-path" class="path">—</span>
+            <button class="icon" id="btn-files-up" title="上一级">↑</button>
+            <button class="icon" id="btn-files-refresh" title="刷新">⟳</button>
+          </div>
+          <div class="entries" id="entries"></div>
+        </div>
+
+        <div class="panel-tab" id="pane-preview" hidden>
+          <div class="preview" id="preview">选中左侧文件即可预览</div>
+        </div>
+
+        <div class="panel-tab" id="pane-logs" hidden>
+          <div class="drawer" id="drawer"></div>
+        </div>
+      </aside>
     </main>
 
-    <div class="modal" id="settings" hidden>
+    <!-- 命令面板（Ctrl/Cmd + K） -->
+    <div class="modal palette" id="palette" hidden>
       <div class="card">
+        <input id="palette-input" placeholder="输入命令…（↑↓ 选择，Enter 执行，Esc 关闭）" autocomplete="off" />
+        <div class="palette-list" id="palette-list"></div>
+      </div>
+    </div>
+
+    <!-- 设置（短任务，弹层） -->
+    <div class="modal" id="settings" hidden>
+      <div class="card settings-card">
         <div class="card-head">
           <h2>设置</h2>
           <button class="icon" id="btn-close-settings-x" title="关闭（Esc）">✕</button>
         </div>
+        <div class="settings-body">
+          <nav class="settings-nav" id="settings-nav">
+            <button class="active" data-sec="model">服务商与模型</button>
+            <button data-sec="appearance">外观</button>
+            <button data-sec="data">数据与目录</button>
+            <button data-sec="diagnostics">诊断</button>
+            <button data-sec="advanced">高级</button>
+          </nav>
+          <div class="settings-panes">
+            <section class="settings-pane" data-sec="model">
+              <div class="field">
+                <label for="set-provider">服务商</label>
+                <select id="set-provider"></select>
+                <div class="hint" id="provider-hint"></div>
+              </div>
+              <div class="field">
+                <label for="set-key">API Key</label>
+                <input id="set-key" type="password" placeholder="粘贴 DeepSeek API Key（sk-…）" />
+                <div class="hint">保存后写进核心配置（壳不落盘、不回显）。在 platform.deepseek.com 申请。</div>
+              </div>
+              <div class="field">
+                <label for="set-model">默认模型</label>
+                <input id="set-model" placeholder="deepseek-v4-pro" />
+                <div class="hint">留空用服务商默认模型；填完 Key 保存后按核心给出的名单刷新。</div>
+              </div>
+              <div class="field">
+                <label>连通性</label>
+                <div class="row-2">
+                  <button id="btn-test-connection">测试连接</button>
+                  <button id="btn-refresh-models">刷新模型名单</button>
+                </div>
+                <div class="hint" id="conn-status"></div>
+              </div>
+              <div class="actions">
+                <button class="primary" id="btn-save-settings">保存</button>
+                <span class="spacer"></span>
+                <span class="hint" id="settings-status"></span>
+              </div>
+            </section>
 
-        <div class="body">
-          <div class="field">
-            <label for="set-provider">服务商</label>
-            <select id="set-provider"></select>
-            <div class="hint" id="provider-hint">当前版本先支持 DeepSeek。</div>
+            <section class="settings-pane" data-sec="appearance" hidden>
+              <div class="field">
+                <label>主题</label>
+                <div class="seg" id="theme-seg">
+                  <button data-theme-pref="system">跟随系统</button>
+                  <button data-theme-pref="dark">深色</button>
+                  <button data-theme-pref="light">浅色</button>
+                </div>
+                <div class="hint">只影响界面外观，不影响核心；偏好存在本机（userData/ui-prefs.json）。</div>
+              </div>
+            </section>
+
+            <section class="settings-pane" data-sec="data" hidden>
+              <div class="field">
+                <label>数据目录</label>
+                <div id="path-list"></div>
+                <div class="hint">核心的会话、Key、技能都放在核心数据目录；壳的偏好放在壳数据目录。</div>
+              </div>
+              <div class="field">
+                <label>会话工作目录</label>
+                <div class="row-2">
+                  <button id="btn-open-cwd">打开当前工作目录</button>
+                  <button id="btn-copy-cwd">复制路径</button>
+                </div>
+                <div class="hint" id="cwd-status"></div>
+              </div>
+            </section>
+
+            <section class="settings-pane" data-sec="diagnostics" hidden>
+              <div class="field">
+                <label>版本与契约</label>
+                <div id="diag-list"></div>
+              </div>
+              <div class="field">
+                <label>最近核心日志</label>
+                <div class="row-2">
+                  <button id="btn-copy-diagnostics">复制诊断信息</button>
+                  <button id="btn-open-log-dir">查看日志面板</button>
+                </div>
+                <div class="hint" id="diag-status"></div>
+              </div>
+            </section>
+
+            <section class="settings-pane" data-sec="advanced" hidden>
+              <div class="field">
+                <label>更新</label>
+                <div class="row-2">
+                  <button id="btn-check-update">检查更新</button>
+                  <span class="hint" id="update-status">未检查</span>
+                </div>
+              </div>
+              <div class="field">
+                <label>自定义 OpenAI 兼容端点（火山方舟 / 硅基流动 / 自建网关）</label>
+                <div class="stack">
+                  <input id="ce-name" placeholder="名称，如 火山方舟" />
+                  <input id="ce-base" placeholder="Base URL，如 https://ark.cn-beijing.volces.com/api/v3" />
+                  <input id="ce-model" placeholder="模型名，如 doubao-pro-32k" />
+                  <input id="ce-key" type="password" placeholder="API Key" />
+                  <button id="btn-ce-save">保存并设为默认</button>
+                </div>
+                <div class="hint" id="ce-status"></div>
+                <div id="custom-endpoints" class="mt8"></div>
+              </div>
+              <div class="field">
+                <label>核心进程</label>
+                <div class="row-2">
+                  <button id="btn-restart-core" title="重启核心进程">重启核心</button>
+                </div>
+                <div class="hint">核心重启后会自动重连通道；正在生成的回复会中断。</div>
+              </div>
+            </section>
           </div>
-
-          <div class="field">
-            <label for="set-key">API Key</label>
-            <input id="set-key" type="password" placeholder="粘贴 DeepSeek API Key（sk-…）" />
-            <div class="hint">保存后写进核心配置（壳不落盘、不回显）。在 platform.deepseek.com 申请。</div>
-          </div>
-
-          <div class="field">
-            <label for="set-model">默认模型</label>
-            <input id="set-model" placeholder="deepseek-v4-pro" />
-            <div class="hint">留空用服务商默认模型。填完 Key 保存后，这里会按核心给出的模型名刷新。</div>
-          </div>
-
-          <details class="adv">
-            <summary>高级：自定义 OpenAI 兼容端点（火山方舟 / 硅基流动 / 自建网关）</summary>
-            <div class="stack">
-              <input id="ce-name" placeholder="名称，如 火山方舟" />
-              <input id="ce-base" placeholder="Base URL，如 https://ark.cn-beijing.volces.com/api/v3" />
-              <input id="ce-model" placeholder="模型名，如 doubao-pro-32k" />
-              <input id="ce-key" type="password" placeholder="API Key" />
-              <button id="btn-ce-save">保存并设为默认</button>
-            </div>
-            <div class="hint" id="ce-status"></div>
-            <div id="custom-endpoints" class="mt8"></div>
-          </details>
-
-          <details class="adv">
-            <summary>运行信息</summary>
-            <div id="run-info" class="mt8"></div>
-          </details>
         </div>
-
-        <div class="actions">
-          <button class="primary" id="btn-save-settings">保存</button>
-          <button id="btn-close-settings">关闭</button>
+        <div class="settings-foot">
+          <button class="primary" id="btn-close-settings">完成</button>
           <span class="spacer"></span>
-          <button id="btn-restart-core" title="重启核心进程">重启核心</button>
+          <span class="hint" id="settings-foot-hint">Esc 关闭 · 点旁边空白也能关</span>
         </div>
-        <div class="hint" id="settings-status"></div>
       </div>
     </div>
 

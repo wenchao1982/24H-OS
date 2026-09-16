@@ -47,19 +47,31 @@ export function resolveRuntime(ctx = {}) {
     ctx.appRoot && path.join(ctx.appRoot, 'runtime')
   ].filter(Boolean)
 
+  // 每个 root 都试两个名字：runtime（当前）与 runtime.prev（上一份，更新失败时回退用）。
+  // 顺序很重要：先当前再上一份，这样"换了运行时但起不来"能自动退回旧的那份。
+  const candidates = []
   for (const root of roots) {
+    if (ctx.prevOnly) {
+      candidates.push(root + '.prev') // 回退模式：只用上一份
+    } else {
+      candidates.push(root)
+      candidates.push(root + '.prev')
+    }
+  }
+
+  for (const root of candidates) {
     // a) venv + 源码树布局
     const venvPython = path.join(root, 'venv', PY_RELPATH)
     const coreDir = path.join(root, 'core')
     if (existsSync(venvPython) && existsSync(path.join(coreDir, 'hermes_cli'))) {
-      return { kind: 'bundled', cmd: venvPython, coreDir, root }
+      return { kind: 'bundled', cmd: venvPython, coreDir, root, label: root.endsWith('.prev') ? '上一份运行时（回退）' : '随包运行时' }
     }
     // b) 单一 venv 布局
     const candidate = path.join(root, PY_RELPATH)
     if (existsSync(candidate)) return { kind: 'python', cmd: candidate, root }
   }
 
-  return { kind: 'path', cmd: IS_WIN ? 'hermes.exe' : 'hermes' }
+  return { kind: 'path', cmd: IS_WIN ? 'hermes.exe' : 'hermes', label: 'PATH 上的 hermes' }
 }
 
 /** 把解析结果变成 argv（python 类运行时都走 `-m hermes_cli.main`，PATH 上的 hermes 直接跑）。 */
@@ -86,12 +98,36 @@ export class Runtime {
     this._onExit = null
   }
 
-  /** 启动核心并等到就绪；返回端口。重复调用返回同一个 promise。 */
-  start() {
+  /** 给诊断页看的一句话描述（解析到哪个运行时） */
+  describe() {
+    if (!this._resolved) return null
+    const r = this._resolved
+    return r.root ? `${r.label ?? r.kind}：${r.root}` : `${r.label ?? r.kind}：${r.cmd}`
+  }
+
+  /** 启动核心并等到就绪；返回端口。重复调用返回同一个 promise。
+   *  解析到的运行时若起不来，会自动退到 runtime.prev（更新失败回滚的兜底），只退一次。 */
+  async start() {
+    try {
+      return await this._startOnce()
+    } catch (err) {
+      const resolved = this._resolved
+      const canFallback = resolved?.root && !resolved.root.endsWith('.prev') && existsSync(`${resolved.root}.prev`)
+      if (!canFallback) throw err
+      this.opts.onLog?.(`[壳] 运行时启动失败（${err.message}），改用上一份运行时重试：${this._resolved.root}.prev`, 'shell')
+      this._starting = null
+      this._allowPrevOnly = true
+      return this._startOnce()
+    }
+  }
+
+  _startOnce() {
     if (this._starting) return this._starting
     this._starting = new Promise((resolve, reject) => {
       this.exitInfo = null
-      const runtime = resolveRuntime(this.opts)
+      let runtime = resolveRuntime(this.opts)
+      if (this._allowPrevOnly) runtime = resolveRuntime({ ...this.opts, prevOnly: true })
+      this._resolved = runtime
       const args = buildArgs(runtime, { profile: this.opts.profile })
 
       const env = { ...process.env }

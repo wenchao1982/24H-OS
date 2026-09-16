@@ -62,6 +62,25 @@ contextBridge.exposeInMainWorld('hermes', {
   prefsGet: invoke('ui:prefs:get'),
   prefsSet: invoke('ui:prefs:set'),
 
+  // 壳信息与原生能力（诊断页 / 数据目录 / 剪贴板 / 保存文件 / 原生菜单 / 更新）
+  uiInfo: invoke('ui:info'),
+  runtimeInfo: invoke('runtime:info'),
+  openPath: invoke('ui:openPath'),
+  copyText: invoke('ui:copyText'),
+  saveTextFile: invoke('ui:saveText'),
+  showContextMenu: invoke('ui:contextMenu'),
+  updateCheck: invoke('ui:updateCheck'),
+
+  // 一级导航的三个页面 + 会话动作 + 运行时自检
+  skillsList: invoke('skills:list'),
+  cronList: invoke('cron:list'),
+  insights: invoke('insights:get'),
+  usageBars: invoke('usage:bars'),
+  runtimeCheck: invoke('setup:runtimeCheck'),
+  sessionUsage: invoke('session:usage'),
+  sessionUndo: invoke('session:undo'),
+  sessionBranch: invoke('session:branch'),
+
   // 事件流
   onReady: on('runtime:ready'),
   onRuntimeError: on('runtime:error'),
@@ -69,5 +88,6 @@ contextBridge.exposeInMainWorld('hermes', {
   onLog: on('runtime:log'),
   onState: on('runtime:state'),
   onGatewayStatus: on('gateway:status'),
-  onEvent: on('gateway:event')
+  onEvent: on('gateway:event'),
+  onBootProgress: on('boot:progress')
 })

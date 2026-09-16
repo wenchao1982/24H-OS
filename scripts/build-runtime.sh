@@ -102,9 +102,8 @@ if ! grep -q "HERMES_BACKEND_READY port=" <<<"$OUT"; then
 fi
 
 SIZE="$(du -sh "$RUNTIME" | cut -f1)"
-cat > "$RUNTIME/.24h-os-runtime.json" <<EOF
-{"schema":1,"coreRef":"$REF","coreVersion":"$CORE_VER","builtAt":"$(date -u +%Y-%m-%dT%H:%M:%SZ)","python":"$VER","pipMirror":"$PIP_MIRROR","layout":"venv+core-source"}
-EOF
+# 清单统一由 scripts/write-runtime-manifest.sh 生成（coreCommit / 源码树指纹 / platform 都在那）
+"$REPO_ROOT/scripts/write-runtime-manifest.sh" "$RUNTIME" "$REF" "$CORE_VER" "$VER" "$PIP_MIRROR"
 echo "==> 完成：$RUNTIME（$SIZE）"
 echo "    元数据: $RUNTIME/.24h-os-runtime.json"
 echo

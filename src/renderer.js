@@ -51,6 +51,14 @@ const state = {
   providerReady: null,
   corePhase: 'starting', // 核心当前阶段（窗口通常比核心先就绪，靠它决定要不要等）
   searchQuery: '',
+  coreVersion: null,
+  runtimeInfo: null,
+  update: { status: '未检查', message: '' },
+  view: 'chat', // chat | skills | tasks | usage
+  panelOpen: false,
+  panelTab: 'files',
+  paletteQuery: '',
+  paletteIndex: 0,
   _searchTimer: null
 }
 
@@ -87,13 +95,45 @@ function checkContract(info) {
 
 /** 把核心的错误码翻译成人话，并给下一步动作 */
 function explainError(message, code) {
-  if (code === 5032 || /No inference provider/i.test(message || '')) {
+  const msg = String(message ?? '')
+  if (code === 5032 || /No inference provider/i.test(msg)) {
     showBanner('还没有配置模型：请到「设置」填入服务商 API Key，或切换一个可用模型。', {
-      action: { label: '去设置', onClick: () => $('btn-settings').click() }
+      action: { label: '去设置', onClick: () => openSettings('model') }
     })
-    return '还没配置模型 —— 点右上角「设置」填入 API Key 后重试。'
+    return '还没配置模型 —— 打开「设置 → 服务商与模型」填入 API Key 后重试。'
   }
-  return message
+  if (code === 4001 || /session not found/i.test(msg)) {
+    return '这个会话在核心里已经不在了（核心重启过）；正在用会话列表里的记录重新唤起，请重试一次。'
+  }
+  if (code === 4023 || /cannot delete an active session/i.test(msg)) {
+    return '正在使用的会话不能直接删：先切到别的会话，或先关闭它再删。'
+  }
+  if (/401|invalid api key|unauthorized|authentication/i.test(`${code} ${msg}`)) {
+    return 'API Key 无效或已失效：到「设置 → 服务商与模型」重新粘贴一次（注意别带空格）。'
+  }
+  if (/429|rate limit|too many requests/i.test(`${code} ${msg}`)) {
+    return '触发了服务商限流：等几十秒再发，或在设置里换一个模型。'
+  }
+  if (/ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ETIMEDOUT|socket hang up|network/i.test(msg)) {
+    return '网络连不上服务商：检查本机网络/代理，或稍后重试（核心需要能访问模型服务商的 API）。'
+  }
+  if (/insufficient|balance|quota|欠费|余额/i.test(msg)) {
+    return '服务商侧额度/余额不足：去服务商控制台充值后再试。'
+  }
+  return msg
+}
+
+/** 切换默认模型（命令面板与模型下拉共用） */
+async function switchModel(provider, model) {
+  const res = await window.hermes.modelSet({ scope: 'main', provider, model })
+  if (!res.ok) {
+    showBanner(`切换模型失败：${explainError(res.error, res.code)}`, { error: true })
+    return
+  }
+  state.model = res.data?.model || model
+  $('session-label').textContent = `${provider} ${state.model}`
+  const sel = $('model-select')
+  for (const opt of sel.options) if (opt.value === `${provider}::${model}`) sel.value = opt.value
 }
 
 /* ───────────────────────── 渲染：消息 ───────────────────────── */
@@ -295,18 +335,13 @@ function renderSessions() {
     const title = el('span', 't', s.title || s.preview || s.id)
     line.appendChild(title)
     const acts = el('div', 'acts')
-    const rename = el('button', null, '改名')
-    rename.addEventListener('click', (e) => {
+    const menuBtn = el('button', null, '⋯')
+    menuBtn.title = '更多操作'
+    menuBtn.addEventListener('click', (e) => {
       e.stopPropagation()
-      startRename(row, title, s.id)
+      openMenu(sessionMenuItems(s, row, title))
     })
-    const del = el('button', null, '删除')
-    del.addEventListener('click', (e) => {
-      e.stopPropagation()
-      removeSession(s.id)
-    })
-    acts.appendChild(rename)
-    acts.appendChild(del)
+    acts.appendChild(menuBtn)
     line.appendChild(acts)
     row.appendChild(line)
     const meta = el('div', 'm', `${s.message_count ?? 0} 条消息`)
@@ -315,6 +350,31 @@ function renderSessions() {
     row.addEventListener('click', () => activateSession(s.id))
     box.appendChild(row)
   }
+}
+
+/** 会话行的「⋯」菜单项（一个动作一处实现，命令面板里调用的是同一批函数） */
+function sessionMenuItems(session, row, titleEl) {
+  return [
+    { id: 'rename', label: '重命名', run: () => startRename(row, titleEl, session.id) },
+    { id: 'activate', label: '切换到该会话', run: () => activateSession(session.id) },
+    { id: 'copy-id', label: '复制 session id', run: () => copyToClipboard(session.id, 'session id') },
+    { id: 'export', label: '导出为 Markdown…', run: () => exportSession(session) },
+    { id: 'branch', label: '从该会话分叉', run: () => branchSession(session.id) },
+    { id: 'undo', label: '撤销该会话的上一轮', run: () => undoTurn(session.id) },
+    { id: 'delete', label: '删除会话', danger: true, run: () => removeSession(session.id) }
+  ]
+}
+
+/** 弹系统原生菜单（Electron 的 Menu.popup）：由壳负责，渲染层只给"有哪些动作、当前选中哪个"。
+ *  这样不需要在渲染层算坐标、也不写内联样式（CSP style-src 'self' 下更省心）。 */
+async function openMenu(items) {
+  const res = await window.hermes.showContextMenu(
+    items.map((i) => ({ id: i.id, label: i.label, danger: Boolean(i.danger), enabled: i.enabled !== false }))
+  )
+  const id = res?.ok ? res.data?.id : null
+  if (!id) return
+  const hit = items.find((i) => i.id === id)
+  if (hit) hit.run()
 }
 
 /** 行内改名（Electron 里没有 window.prompt） */
@@ -414,15 +474,299 @@ function renderProviderSelect() {
   }
 }
 
-function renderRunInfo(info) {
-  const box = $('run-info')
-  box.textContent = ''
-  for (const [k, v] of Object.entries(info)) {
-    const row = el('div', 'kv')
-    row.appendChild(el('b', null, k))
-    row.appendChild(el('code', null, String(v)))
-    box.appendChild(row)
+/** 设置 · 诊断：把"出问题时要看的东西"一次列全（版本、契约、运行时、路径） */
+function renderPanes(info) {
+  const diag = $('diag-list')
+  if (diag) {
+    diag.textContent = ''
+    for (const [k, v] of Object.entries(info)) {
+      const row = el('div', 'kv')
+      row.appendChild(el('b', null, k))
+      row.appendChild(el('code', null, String(v)))
+      diag.appendChild(row)
+    }
   }
+  const paths = $('path-list')
+  if (paths) {
+    paths.textContent = ''
+    const rows = [
+      ['核心数据（HERMES_HOME）', state.paths?.hermesHome],
+      ['壳数据（偏好）', state.paths?.userData],
+      ['随包运行时', state.paths?.runtime],
+      ['会话工作目录', state.cwd]
+    ]
+    for (const [k, v] of rows) {
+      const row = el('div', 'kv')
+      row.appendChild(el('b', null, k))
+      row.appendChild(el('code', null, v || '—'))
+      paths.appendChild(row)
+    }
+  }
+}
+
+/** 诊断信息（一键复制用）：版本 + 路径 + 契约 + 最近日志 */
+function diagnosticsText() {
+  const lines = [
+    `24H-OS ${state.shellVersion ?? '?'}（Electron ${state.electronVersion ?? '?'}）`,
+    `核心 ${state.coreVersion ?? '?'} · 桌面契约 ${state.contract ?? '?'}（壳期望 ${EXPECTED_DESKTOP_CONTRACT}）`,
+    `运行时 ${state.runtimeInfo ? `${state.runtimeInfo.coreVersion ?? '?'} / python ${state.runtimeInfo.python ?? '?'} / ${state.runtimeInfo.layout ?? '?'}` : '未读到清单'}`,
+    `HERMES_HOME ${state.paths?.hermesHome ?? '?'}`,
+    `userData ${state.paths?.userData ?? '?'}`,
+    `会话 ${state.sessionId ?? '—'} · 模型 ${state.model || '—'}`,
+    `主题 ${themePref} · 面板 ${state.panelOpen ? state.panelTab : '收起'} · 视图 ${state.view}`,
+    '',
+    '最近日志：',
+    ...logLines.slice(-30)
+  ]
+  return lines.join('\n')
+}
+
+/* ───────────────────────── 视图 / 右侧面板 / 命令面板 ───────────────────────── */
+
+const VIEWS = ['chat', 'skills', 'tasks', 'usage']
+
+/** 一级导航切换：对话 / 技能 / 任务 / 用量 */
+function setView(view) {
+  if (!VIEWS.includes(view)) view = 'chat'
+  state.view = view
+  $('shell').dataset.view = view
+  for (const v of VIEWS) {
+    const btn = $(`nav-${v}`)
+    if (btn) btn.classList.toggle('active', v === view)
+  }
+  $('side').hidden = view !== 'chat'
+  $('chat-view').hidden = view !== 'chat'
+  for (const v of ['skills', 'tasks', 'usage']) $(`page-${v}`).hidden = v !== view
+  // 右侧面板只在对话页有意义
+  $('panel').hidden = !(view === 'chat' && state.panelOpen)
+  if (view === 'skills') renderSkillsPage()
+  if (view === 'tasks') renderTasksPage()
+  if (view === 'usage') renderUsagePage()
+}
+
+/** 右侧面板：文件 / 预览 / 日志 三个标签 */
+function setPanelTab(tab) {
+  state.panelTab = tab
+  for (const t of ['files', 'preview', 'logs']) {
+    $(`tab-${t}`).classList.toggle('active', t === tab)
+    $(`pane-${t}`).hidden = t !== tab
+  }
+  if (tab === 'logs') drawer.scrollTop = drawer.scrollHeight
+}
+function showPanel(tab) {
+  state.panelOpen = true
+  const tab_ = tab || state.panelTab
+  state.panelTab = tab_
+  $('panel').hidden = false
+  setPanelTab(tab_)
+  if (tab_ === 'files' && !filesUI.path) openDir(state.cwd || '.')
+}
+function hidePanel() {
+  state.panelOpen = false
+  $('panel').hidden = true
+}
+function togglePanel(tab) {
+  if (state.panelOpen && (!tab || tab === state.panelTab)) hidePanel()
+  else showPanel(tab)
+}
+
+/* ── 命令面板（Ctrl/Cmd + K）─────────────────────────────────────────────
+   功能一多，顶栏按钮一定会崩；上游桌面也是把这里当主入口。 */
+function paletteCommands() {
+  const cmds = [
+    { title: '新建会话', hint: '对话', run: () => newSession() },
+    { title: '刷新会话列表', hint: '对话', run: () => refreshSessions() },
+    { title: '搜索会话', hint: '对话', run: () => { setView('chat'); $('search').focus() } },
+    { title: '打开设置', hint: '设置', run: () => openSettings('model') },
+    { title: '设置 · 外观', hint: '设置', run: () => openSettings('appearance') },
+    { title: '设置 · 数据与目录', hint: '设置', run: () => openSettings('data') },
+    { title: '设置 · 诊断', hint: '设置', run: () => openSettings('diagnostics') },
+    { title: '设置 · 高级（自定义端点 / 更新 / 重启核心）', hint: '设置', run: () => openSettings('advanced') },
+    { title: '面板 · 文件', hint: '面板', run: () => { setView('chat'); showPanel('files') } },
+    { title: '面板 · 预览', hint: '面板', run: () => { setView('chat'); showPanel('preview') } },
+    { title: '面板 · 日志', hint: '面板', run: () => { setView('chat'); showPanel('logs') } },
+    { title: '面板 · 收起', hint: '面板', run: () => hidePanel() },
+    { title: '跳到对话', hint: '导航', run: () => setView('chat') },
+    { title: '跳到技能', hint: '导航', run: () => setView('skills') },
+    { title: '跳到任务', hint: '导航', run: () => setView('tasks') },
+    { title: '跳到用量', hint: '导航', run: () => setView('usage') },
+    { title: '主题 · 跟随系统', hint: '外观', run: () => switchTheme('system') },
+    { title: '主题 · 深色', hint: '外观', run: () => switchTheme('dark') },
+    { title: '主题 · 浅色', hint: '外观', run: () => switchTheme('light') },
+    { title: '导出当前会话（Markdown）', hint: '会话', run: () => exportCurrentSession() },
+    { title: '撤销上一轮', hint: '会话', run: () => undoTurn() },
+    { title: '从当前会话分叉', hint: '会话', run: () => branchSession() },
+    { title: '复制诊断信息', hint: '诊断', run: () => copyDiagnostics() },
+    { title: '打开核心数据目录', hint: '诊断', run: () => openRuntimeFolder() },
+    { title: '重启核心', hint: '核心', run: () => restartCore() },
+    { title: '检查更新', hint: '更新', run: () => checkUpdate() }
+  ]
+  for (const p of state.providers.filter((x) => x.authenticated)) {
+    for (const m of p.models ?? []) {
+      cmds.push({ title: `切换模型：${m}`, hint: '模型', run: () => switchModel(p.slug, m) })
+    }
+  }
+  return cmds
+}
+
+function renderPalette() {
+  const q = state.paletteQuery.trim().toLowerCase()
+  const all = paletteCommands()
+  const list = (q ? all.filter((c) => c.title.toLowerCase().includes(q)) : all).slice(0, 40)
+  state.paletteItems = list
+  if (state.paletteIndex >= list.length) state.paletteIndex = 0
+  const box = $('palette-list')
+  box.textContent = ''
+  if (!list.length) {
+    box.appendChild(el('div', 'empty static', '没有匹配的命令'))
+    return
+  }
+  list.forEach((c, i) => {
+    const row = el('div', 'palette-item' + (i === state.paletteIndex ? ' active' : ''))
+    row.appendChild(el('span', 't', c.title))
+    if (c.hint) row.appendChild(el('span', 'hint', c.hint))
+    row.addEventListener('click', () => runPaletteItem(i))
+    row.addEventListener('mousemove', () => {
+      if (state.paletteIndex !== i) {
+        state.paletteIndex = i
+        renderPalette()
+      }
+    })
+    box.appendChild(row)
+  })
+}
+
+function openPalette() {
+  state.paletteQuery = ''
+  state.paletteIndex = 0
+  $('palette-input').value = ''
+  $('palette').hidden = false
+  renderPalette()
+  $('palette-input').focus()
+}
+function closePalette() {
+  $('palette').hidden = true
+}
+function runPaletteItem(i) {
+  const cmd = (state.paletteItems ?? [])[i]
+  closePalette()
+  if (cmd) cmd.run()
+}
+
+/* ── 右侧面板专用的服务端能力（技能 / 任务 / 用量）───────────────────── */
+/** 核心的技能分组 key → 中文标题（核心只给英文 key，界面别再暴露英文） */
+const SKILL_GROUP_LABELS = {
+  'autonomous-ai-agents': '智能体与编码',
+  creative: '创意与设计',
+  devops: '运维与调试',
+  documents: '文档处理',
+  media: '媒体',
+  email: '邮件',
+  'note-taking': '笔记',
+  research: '研究',
+  data: '数据',
+  apple: 'Apple 生态',
+  communication: '沟通',
+  productivity: '效率',
+  system: '系统'
+}
+const groupLabel = (key) => SKILL_GROUP_LABELS[key] ?? key
+
+async function renderSkillsPage() {
+  const body = $('skills-body')
+  const summary = $('skills-summary')
+  if (!body.dataset.loaded) body.appendChild(el('div', 'empty static', '读取技能…'))
+  const res = await window.hermes.skillsList().catch(() => ({ ok: false, error: '调用失败' }))
+  if (!res.ok) {
+    body.textContent = ''
+    body.appendChild(el('div', 'empty static', `读取技能失败：${res.error}`))
+    return
+  }
+  const data = res.data ?? {}
+  const groups = data.skills ?? {}
+  const total = Object.values(groups).reduce((n, list) => n + (Array.isArray(list) ? list.length : 0), 0)
+  summary.textContent = `${total} 个技能（核心返回 ${Object.keys(groups).length} 组）`
+  body.textContent = ''
+  for (const [group, items] of Object.entries(groups)) {
+    const sec = el('div', 'group')
+    sec.appendChild(el('div', 'group-title', groupLabel(group)))
+    for (const item of items ?? []) {
+      const row = el('div', 'list-row')
+      const raw = typeof item === 'string' ? item : item.name ?? ''
+      const nice = String(raw).replace(/[-_]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
+      row.appendChild(el('div', 't', nice))
+      row.title = raw
+      const desc = typeof item === 'object' ? item.description : ''
+      if (desc) row.appendChild(el('div', 'm', desc))
+      sec.appendChild(row)
+    }
+    body.appendChild(sec)
+  }
+}
+
+async function renderTasksPage() {
+  const body = $('tasks-body')
+  const summary = $('tasks-summary')
+  const res = await window.hermes.cronList().catch(() => ({ ok: false, error: '调用失败' }))
+  if (!res.ok) {
+    body.textContent = ''
+    body.appendChild(el('div', 'empty static', `读取定时任务失败：${res.error}`))
+    return
+  }
+  const jobs = res.data?.jobs ?? []
+  summary.textContent = jobs.length ? `${jobs.length} 个任务` : '还没有定时任务'
+  body.textContent = ''
+  if (!jobs.length) {
+    body.appendChild(
+      el('div', 'empty static', '还没有定时任务。定时任务由核心的 cron 管理，目前这个界面只做只读展示。')
+    )
+    return
+  }
+  for (const job of jobs) {
+    const row = el('div', 'list-row')
+    row.appendChild(el('div', 't', job.name || job.job_id || '（未命名任务）'))
+    row.appendChild(el('div', 'm', `${job.schedule ?? '—'} · ${job.deliver ?? ''} ${job.next_run_at ? '· 下次 ' + job.next_run_at : ''}`))
+    body.appendChild(row)
+  }
+}
+
+async function renderUsagePage() {
+  const body = $('usage-body')
+  const summary = $('usage-summary')
+  const [ins, bars] = await Promise.all([
+    window.hermes.insights({ days: 30 }).catch(() => ({ ok: false })),
+    window.hermes.usageBars().catch(() => ({ ok: false }))
+  ])
+  body.textContent = ''
+  if (ins.ok) {
+    const d = ins.data ?? {}
+    summary.textContent = `最近 ${d.days ?? 30} 天`
+    const card = el('div', 'stat-row')
+    card.appendChild(stat('会话', d.sessions ?? 0))
+    card.appendChild(stat('消息', d.messages ?? 0))
+    body.appendChild(card)
+  } else {
+    body.appendChild(el('div', 'empty static', '读取用量失败（核心未就绪？）'))
+  }
+  const b = bars.ok ? bars.data ?? {} : {}
+  if (b.available) {
+    const sec = el('div', 'group')
+    sec.appendChild(el('div', 'group-title', b.plan_name ? `套餐：${b.plan_name}` : '套餐'))
+    if (b.total_spendable_display) sec.appendChild(el('div', 'list-row', `可用余额：${b.total_spendable_display}`))
+    if (b.renews_display) sec.appendChild(el('div', 'list-row', `续期：${b.renews_display}`))
+    body.appendChild(sec)
+  } else {
+    body.appendChild(
+      el('div', 'hint', '账号用量（余额 / 套餐）需要登录上游账号，本版本未接入 —— 当前是"自带 API Key"模式。')
+    )
+  }
+}
+
+function stat(label, value) {
+  const box = el('div', 'stat')
+  box.appendChild(el('div', 'v', String(value)))
+  box.appendChild(el('div', 'k', label))
+  return box
 }
 
 /* ───────────────────────── 交互逻辑 ───────────────────────── */
@@ -500,6 +844,7 @@ async function activateSession(id) {
   paintCwd(res.data?.info?.cwd)
   await loadHistory(id)
   renderSessions()
+  refreshUsage()
 }
 
 async function loadHistory(id) {
@@ -587,6 +932,7 @@ function finishStream() {
     if (textEl && s.msg.text) renderRich(textEl, s.msg.text)
     if (!s.msg.text) s.node.remove()
   }
+  refreshUsage()
   state.streaming = null
   refreshSessions()
 }
@@ -628,7 +974,7 @@ function onGatewayEvent(evt) {
   if (evt.sessionId && state.sessionId && evt.sessionId !== state.sessionId) return
 
   switch (type) {
-    case 'turn.started':
+    case 'message.start': // 核心的回合开始事件（契约里的正式名字；曾经写成 turn.started，等于没接上）
       if (!state.streaming) {
         const assistant = { role: 'assistant', text: '', thinking: '', tools: [], toolMap: new Map() }
         const node = renderMessage(assistant)
@@ -679,12 +1025,32 @@ function onGatewayEvent(evt) {
     case 'setup.ready':
       state.providerReady = payload?.provider_configured ?? null
       if (payload?.provider_configured === false) {
-        showBanner('首次启动：还没有配置任何模型服务商。到「设置」填入 API Key 就能开始对话。', {
-          action: { label: '去设置', onClick: () => $('btn-settings').click() }
+        showBanner('首次启动：还没配置模型。到「设置 → 服务商与模型」填入 DeepSeek API Key 就能开始对话。', {
+          action: { label: '去设置', onClick: () => openSettings('model') }
         })
       } else if (payload?.provider_configured === true) {
         hideBanner()
       }
+      break
+    case 'session.usage':
+      // 核心主动推用量：直接更新上下文条，不用再额外问一次
+      if (payload && (payload.context_percent != null || payload.total != null)) renderUsagePayload(payload)
+      else refreshUsage()
+      break
+    case 'session.reclaimed':
+      // 运行时按 LRU 回收了会话：不发消息就没事，下次发会自动 resume（4001 → 恢复路径）
+      showBanner('这个会话已被运行时回收（内存紧张时会发生）。继续发消息会自动把它恢复回来。')
+      break
+    case 'message.interim':
+      if (state.streaming && payload?.text) {
+        state.streaming.msg.text += payload.text
+        paintStream()
+      }
+      break
+    case 'subagent.thinking':
+    case 'subagent.tool':
+      // 子智能体活动：目前只在工具区提示，完整 UI 留到后面做
+      if (payload?.name) $('turn-state').textContent = `子任务：${payload.name}`
       break
     case 'sessions.changed':
       refreshSessions()
@@ -723,7 +1089,9 @@ function renderEntries() {
 }
 
 async function openDir(dir) {
-  $('preview').hidden = true
+  state.panelOpen = true
+  $('panel').hidden = false
+  setPanelTab('files')
   const res = await window.hermes.fsList({ path: dir })
   if (!res.ok) {
     showBanner(`列目录失败：${res.error}`, { error: true })
@@ -744,7 +1112,7 @@ async function openFile(file) {
   }
   const data = res.data ?? {}
   const box = $('preview')
-  box.hidden = false
+  showPanel('preview') // 预览统一在右侧面板的"预览"标签里
   box.textContent = ''
   box.appendChild(el('div', null, `${data.name} · ${data.size} B · ${data.mime_type || ''}`))
   const url = data.data_url || ''
@@ -763,18 +1131,14 @@ async function openFile(file) {
   }
 }
 
-async function toggleFiles() {
-  const panel = $('files-panel')
-  panel.hidden = !panel.hidden
-  if (!panel.hidden) {
-    if (!filesUI.path && state.cwd) await openDir(state.cwd)
-    else if (!filesUI.path) await openDir('.')
-  }
-}
+// 面板开合统一走 showPanel/hidePanel/togglePanel（见"视图 / 右侧面板"一节）
 
 /* ───────────────────────── 日志 / 状态 ───────────────────────── */
 
+const logLines = []
 function appendLog(entry) {
+  logLines.push(entry.line)
+  if (logLines.length > 800) logLines.shift()
   const div = el('div', null, entry.line)
   if (entry.stream === 'stderr') div.className = 'err'
   else if (/HERMES_BACKEND_READY|listening on/.test(entry.line)) div.className = 'hi'
@@ -795,17 +1159,37 @@ function setGatewayState(connected) {
   $('gw-state').textContent = connected ? '已连接' : '未连接'
 }
 
-function refreshRunInfo() {
-  // 注意：所有 IPC 调用统一返回 {ok,data}，状态在 data 里 —— 别再直接读 s.phase（会得到 undefined）
-  window.hermes.state().then((r) => {
-    const s = r?.data ?? {}
-    renderRunInfo({
-      核心: s.phase ?? '-',
-      端口: s.port ?? '-',
-      会话: state.sessionId ?? '-',
-      模型: state.model || '-'
-    })
+async function refreshDiagnostics() {
+  // 一次性把"出问题要看的东西"取齐：壳版本 / 核心版本 / 契约 / 运行时清单 / 路径
+  const [st, rt, inf] = await Promise.all([
+    window.hermes.state().catch(() => ({ ok: false })),
+    window.hermes.runtimeInfo().catch(() => ({ ok: false })),
+    window.hermes.uiInfo().catch(() => ({ ok: false }))
+  ])
+  const s = st?.data ?? {}
+  state.runtimeInfo = rt?.ok ? rt.data?.manifest ?? null : null
+  state.paths = inf?.ok ? inf.data?.paths ?? null : state.paths
+  state.shellVersion = inf?.ok ? inf.data?.appVersion ?? state.shellVersion : state.shellVersion
+  state.electronVersion = inf?.ok ? inf.data?.electronVersion ?? state.electronVersion : state.electronVersion
+  if (s.phase === 'ready' && state.coreVersion == null) {
+    const health = await window.hermes.health().catch(() => null)
+    if (health?.ok) state.coreVersion = health.data?.version ?? null
+  }
+  renderPanes({
+    核心状态: s.phase ?? '-',
+    端口: s.port ?? '-',
+    核心版本: state.coreVersion ?? '读取中…',
+    桌面契约: `${state.contract ?? '-'}（期望 ${EXPECTED_DESKTOP_CONTRACT}）`,
+    运行时核心: state.runtimeInfo?.coreVersion ?? '未读到清单',
+    运行时构建: state.runtimeInfo?.builtAt ?? '-',
+    壳版本: state.shellVersion ?? '-',
+    Electron: state.electronVersion ?? '-',
+    会话: state.sessionId ?? '-',
+    模型: state.model || '-'
   })
+}
+function refreshRunInfo() {
+  refreshDiagnostics()
 }
 
 /* ───────────────────────── 设置 ───────────────────────── */
@@ -932,8 +1316,195 @@ async function saveSettings() {
   }
 }
 
+/* ───────────────────── 会话动作（导出 / 撤销 / 分叉）───────────────────── */
+
+async function copyToClipboard(text, what = '内容') {
+  if (!text) {
+    showBanner(`没有可复制的${what}`, { error: true })
+    return
+  }
+  const res = await window.hermes.copyText(String(text))
+  if (!res.ok) showBanner(`复制失败：${res.error}`, { error: true })
+}
+
+/** 把会话历史拼成 Markdown（导出用；标题、时间、工具调用都带上） */
+function historyToMarkdown(session, messages) {
+  const lines = [`# ${session.title || session.id}`, '', `- 会话：\`${session.id}\``, `- 导出时间：${new Date().toLocaleString()}`, '']
+  for (const m of messages) {
+    const role = m.role === 'user' ? '你' : m.role === 'assistant' ? '24H' : m.role
+    const text =
+      typeof m.content === 'string'
+        ? m.content
+        : Array.isArray(m.content)
+          ? m.content.map((c) => c.text ?? '').join('')
+          : ''
+    if (!text) continue
+    lines.push(`## ${role}`, '', text, '')
+  }
+  return lines.join('\n')
+}
+
+async function exportSession(session) {
+  const hist = await window.hermes.sessionHistory({ session_id: session.id })
+  if (!hist.ok) {
+    showBanner(`导出失败：读不到会话历史（${hist.error}）`, { error: true })
+    return
+  }
+  const md = historyToMarkdown(session, hist.data?.messages ?? [])
+  const safeTitle = String(session.title || session.id).replace(/[\\/:*?"<>|]/g, '_').slice(0, 60)
+  const res = await window.hermes.saveTextFile({ defaultName: `${safeTitle}.md`, content: md })
+  if (!res.ok) {
+    showBanner(`导出失败：${res.error}`, { error: true })
+    return
+  }
+  if (res.data?.path) showBanner(`已导出：${res.data.path}`, { action: { label: '打开目录', onClick: () => window.hermes.openPath(res.data.path) } })
+}
+
+async function exportCurrentSession() {
+  const session = state.sessions.find((s) => s.id === state.sessionId) ?? { id: state.sessionId, title: state.sessionId }
+  if (!session.id) {
+    showBanner('还没有可导出的会话', { error: true })
+    return
+  }
+  await exportSession(session)
+}
+
+async function undoTurn(sessionId = state.sessionId) {
+  if (!sessionId) return
+  const res = await window.hermes.sessionUndo({ session_id: sessionId })
+  if (!res.ok) {
+    showBanner(`撤销失败：${explainError(res.error, res.code)}`, { error: true })
+    return
+  }
+  if (sessionId === state.sessionId) await loadHistory(sessionId)
+  await refreshSessions()
+}
+
+async function branchSession(sessionId = state.sessionId) {
+  if (!sessionId) return
+  const res = await window.hermes.sessionBranch({ session_id: sessionId })
+  if (!res.ok) {
+    showBanner(`分叉失败：${explainError(res.error, res.code)}`, { error: true })
+    return
+  }
+  await refreshSessions()
+  const newId = res.data?.session_id ?? res.data?.id
+  if (newId) await activateSession(newId)
+  showBanner('已从当前会话分叉出新会话')
+}
+
+/* ───────────────────── 诊断 / 更新 / 连通性 ───────────────────── */
+
+async function copyDiagnostics() {
+  const res = await window.hermes.copyText(diagnosticsText())
+  const st = $('diag-status')
+  if (st) st.textContent = res.ok ? '诊断信息已复制到剪贴板（可直接发给技术支持）' : `复制失败：${res.error}`
+}
+
+async function openRuntimeFolder() {
+  const dir = state.paths?.hermesHome
+  if (!dir) {
+    showBanner('还没读到核心数据目录', { error: true })
+    return
+  }
+  await window.hermes.openPath(dir)
+}
+
+async function restartCore() {
+  const status = $('settings-status') ?? $('conn-status')
+  if (status) status.textContent = '正在重启核心…'
+  const res = await window.hermes.restart()
+  if (status) status.textContent = res.ok ? '核心已重启。' : `重启失败：${res.error}`
+}
+
+async function testConnection() {
+  const st = $('conn-status')
+  st.textContent = '正在测试（会向核心要一次运行时自检）…'
+  const res = await window.hermes.runtimeCheck({}).catch(() => ({ ok: false, error: '调用失败' }))
+  if (!res.ok) {
+    st.textContent = `测试失败：${res.error}`
+    return
+  }
+  const d = res.data ?? {}
+  if (d.ok) {
+    st.textContent = `连接正常（${d.provider ?? state.model ?? '已配置服务商'}）`
+  } else {
+    st.textContent = `还没就绪：${explainError(d.error ?? '未知原因', d.code)}`
+  }
+}
+
+async function checkUpdate() {
+  const st = $('update-status')
+  st.textContent = '正在检查…'
+  const res = await window.hermes.updateCheck().catch(() => ({ ok: false, error: '调用失败' }))
+  if (!res.ok) {
+    st.textContent = `检查失败：${res.error}`
+    return
+  }
+  const d = res.data ?? {}
+  st.textContent = d.message ?? (d.available ? `发现新版本 ${d.version}` : '已是最新版本')
+}
+
+/* ───────────────────── 上下文用量 ───────────────────── */
+
+/** 把用量对象画到输入框上方的上下文条（事件推送与主动查询共用一处实现） */
+function renderUsagePayload(d) {
+  const pct = typeof d.context_percent === 'number' ? Math.round(d.context_percent) : null
+  const parts = []
+  if (pct != null) parts.push(`上下文 ${pct}%`)
+  if (d.context_used != null && d.context_max != null) parts.push(`${d.context_used}/${d.context_max}`)
+  else if (d.total) parts.push(`${d.total} tokens`)
+  if (d.cost_usd) parts.push(`$${Number(d.cost_usd).toFixed(4)}`)
+  if (d.avg_tps) parts.push(`${Math.round(d.avg_tps)} tok/s`)
+  const node = $('context-usage')
+  node.textContent = parts.join(' · ')
+  node.title = JSON.stringify(d, null, 1).slice(0, 800)
+}
+
+async function refreshUsage() {
+  if (!state.sessionId) {
+    $('context-usage').textContent = ''
+    return
+  }
+  const res = await window.hermes.sessionUsage({ session_id: state.sessionId }).catch(() => ({ ok: false }))
+  if (!res.ok) {
+    $('context-usage').textContent = ''
+    return
+  }
+  renderUsagePayload(res.data ?? {})
+}
+
 /* ───────────────────────── 事件绑定 ───────────────────────── */
 
+for (const v of ['chat', 'skills', 'tasks', 'usage']) {
+  const btn = $(`nav-${v}`)
+  if (btn) btn.addEventListener('click', () => setView(v))
+}
+$('nav-settings').addEventListener('click', () => openSettings('model'))
+$('btn-palette').addEventListener('click', openPalette)
+$('palette-input').addEventListener('input', (e) => {
+  state.paletteQuery = e.target.value
+  state.paletteIndex = 0
+  renderPalette()
+})
+$('palette-input').addEventListener('keydown', (e) => {
+  const items = state.paletteItems ?? []
+  if (e.key === 'ArrowDown') {
+    e.preventDefault()
+    state.paletteIndex = Math.min(state.paletteIndex + 1, Math.max(items.length - 1, 0))
+    renderPalette()
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault()
+    state.paletteIndex = Math.max(state.paletteIndex - 1, 0)
+    renderPalette()
+  } else if (e.key === 'Enter') {
+    e.preventDefault()
+    runPaletteItem(state.paletteIndex)
+  }
+})
+$('palette').addEventListener('click', (e) => {
+  if (e.target === $('palette')) closePalette()
+})
 $('btn-new').addEventListener('click', newSession)
 $('btn-refresh').addEventListener('click', refreshSessions)
 $('btn-send').addEventListener('click', send)
@@ -942,12 +1513,12 @@ $('btn-stop').addEventListener('click', async () => {
   await window.hermes.sessionInterrupt({ session_id: state.sessionId })
   finishStream()
 })
-$('btn-logs').addEventListener('click', () => {
-  drawer.hidden = !drawer.hidden
-})
 $('btn-cwd').addEventListener('click', pickCwd)
-$('btn-files').addEventListener('click', toggleFiles)
-$('btn-files-refresh').addEventListener('click', () => (filesUI.path ? openDir(filesUI.path) : toggleFiles()))
+// 右侧面板（文件 / 预览 / 日志 三个标签，替代原来的"文件右栏 + 日志底抽屉"）
+$('btn-panel').addEventListener('click', () => togglePanel())
+$('btn-panel-close').addEventListener('click', hidePanel)
+for (const t of ['files', 'preview', 'logs']) $(`tab-${t}`).addEventListener('click', () => showPanel(t))
+$('btn-files-refresh').addEventListener('click', () => (filesUI.path ? openDir(filesUI.path) : showPanel('files')))
 $('btn-files-up').addEventListener('click', () => {
   if (!filesUI.path) return
   const parent = filesUI.path.replace(/[\\/][^\\/]*$/, '') || '/'
@@ -958,17 +1529,47 @@ $('search').addEventListener('input', (e) => {
   clearTimeout(state._searchTimer)
   state._searchTimer = setTimeout(() => runSearch(q), 250)
 })
+function setSettingsSection(sec) {
+  const panes = document.querySelectorAll('.settings-pane')
+  const navs = document.querySelectorAll('#settings-nav button')
+  let hit = false
+  panes.forEach((pane) => {
+    const on = pane.dataset.sec === sec
+    pane.hidden = !on
+    if (on) hit = true
+  })
+  navs.forEach((b) => b.classList.toggle('active', b.dataset.sec === sec && hit))
+  if (!hit && panes.length) setSettingsSection(panes[0].dataset.sec)
+}
 function closeSettings() {
   $('settings').hidden = true
 }
-function openSettings() {
+function openSettings(section) {
   $('settings').hidden = false
+  if (section) setSettingsSection(section)
+  markThemeSegment()
   loadSettingsForm()
 }
+document.querySelectorAll('#settings-nav button').forEach((b) =>
+  b.addEventListener('click', () => setSettingsSection(b.dataset.sec))
+)
+
+/** 主题：一个动作一处状态（顶栏按钮、设置里的分段、命令面板都走这里） */
+function switchTheme(pref) {
+  applyTheme(pref)
+  persistTheme(pref)
+  markThemeSegment()
+}
+function markThemeSegment() {
+  document.querySelectorAll('#theme-seg button').forEach((b) => {
+    b.classList.toggle('active', b.dataset.themePref === themePref)
+  })
+}
+document.querySelectorAll('#theme-seg button').forEach((b) =>
+  b.addEventListener('click', () => switchTheme(b.dataset.themePref))
+)
 $('btn-theme').addEventListener('click', () => {
-  const next = (document.documentElement.dataset.theme || 'dark') === 'dark' ? 'light' : 'dark'
-  applyTheme(next)
-  persistTheme(next)
+  switchTheme((document.documentElement.dataset.theme || 'dark') === 'dark' ? 'light' : 'dark')
 })
 themeMedia.addEventListener('change', () => {
   if (themePref === 'system') applyTheme('system') // 只有"跟随系统"时才跟着系统变
@@ -981,24 +1582,52 @@ $('settings').addEventListener('click', (e) => {
   if (e.target === $('settings')) closeSettings() // 点卡片外的底色也能关
 })
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && !$('settings').hidden) closeSettings()
+  if ((e.metaKey || e.ctrlKey) && String(e.key).toLowerCase() === 'k') {
+    e.preventDefault()
+    openPalette()
+    return
+  }
+  if (e.key === 'Escape') {
+    if (!$('palette').hidden) closePalette()
+    else if (!$('settings').hidden) closeSettings()
+  }
 })
 $('btn-save-settings').addEventListener('click', saveSettings)
 $('btn-ce-save').addEventListener('click', saveCustomEndpoint)
-$('btn-restart-core').addEventListener('click', async () => {
-  const status = $('settings-status')
-  status.textContent = '正在重启核心…'
-  const res = await window.hermes.restart()
-  status.textContent = res.ok ? '核心已重启。' : `重启失败：${res.error}`
+$('btn-restart-core').addEventListener('click', () => restartCore())
+$('btn-test-connection').addEventListener('click', () => testConnection())
+$('btn-refresh-models').addEventListener('click', async () => {
+  const st = $('conn-status')
+  st.textContent = '正在重新读取模型名单…'
+  await refreshModels()
+  st.textContent = state.providers.some((p) => p.authenticated) ? '模型名单已更新。' : '还没检测到已配置 Key 的服务商。'
+  renderProviderSelect()
 })
+$('btn-open-cwd').addEventListener('click', async () => {
+  const dir = state.cwd
+  const st = $('cwd-status')
+  if (!dir) {
+    st.textContent = '当前会话还没有工作目录'
+    return
+  }
+  const res = await window.hermes.openPath(dir)
+  st.textContent = res.ok ? `已打开 ${dir}` : `打开失败：${res.error}`
+})
+$('btn-copy-cwd').addEventListener('click', async () => {
+  const st = $('cwd-status')
+  const res = await window.hermes.copyText(state.cwd || '')
+  st.textContent = res.ok ? '已复制工作目录路径' : `复制失败：${res.error}`
+})
+$('btn-copy-diagnostics').addEventListener('click', () => copyDiagnostics())
+$('btn-open-log-dir').addEventListener('click', () => {
+  closeSettings()
+  showPanel('logs')
+})
+$('btn-check-update').addEventListener('click', () => checkUpdate())
 $('model-select').addEventListener('change', async (e) => {
   const [provider, model] = String(e.target.value).split('::')
   if (!model) return
-  const res = await window.hermes.modelSet({ scope: 'main', provider, model })
-  if (res.ok) {
-    state.model = model
-    $('session-label').textContent = `${provider} ${model}`
-  }
+  await switchModel(provider, model)
 })
 $('input').addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
@@ -1007,11 +1636,40 @@ $('input').addEventListener('keydown', (e) => {
   }
 })
 
+/** 启动阶段：壳按顺序推 stage，界面把"走到哪一步"画成清单 */
+const BOOT_STEPS = [
+  { key: 'spawn', label: '启动核心进程' },
+  { key: 'ready', label: '核心就绪（握手）' },
+  { key: 'gateway', label: '建立实时通道' },
+  { key: 'data', label: '读取会话与模型' }
+]
+function renderBootProgress(progress) {
+  const stage = progress?.stage ?? 'spawn'
+  const idx = BOOT_STEPS.findIndex((s) => s.key === stage)
+  clearThread()
+  const box = el('div', 'boot')
+  box.appendChild(el('div', 'boot-title', progress?.message ?? '正在启动核心…'))
+  BOOT_STEPS.forEach((step, i) => {
+    const state = idx < 0 ? '' : i < idx ? 'done' : i === idx ? 'active' : ''
+    const row = el('div', `boot-step ${state}`)
+    row.appendChild(el('span', 'bullet'))
+    row.appendChild(el('span', 't', step.label))
+    if (i === idx && progress?.message) row.appendChild(el('span', 'm', progress.message))
+    box.appendChild(row)
+  })
+  box.appendChild(el('div', 'hint', '首次启动会建运行时环境，可能 1–2 分钟（杀毒软件扫描时更久）。'))
+  thread.appendChild(box)
+}
+window.hermes.onBootProgress?.((progress) => {
+  state.bootProgress = progress
+  if (state.corePhase !== 'ready') renderBootProgress(progress)
+})
+
 window.hermes.onState((s) => {
   setCoreState(s.phase, s)
   if (s.phase === 'starting') {
     showBanner('核心正在启动…（首次启动要建运行时环境，可能 1–2 分钟，杀软扫描时更久）', {
-      action: { label: '看日志', onClick: () => { $('drawer').hidden = false } }
+      action: { label: '看日志', onClick: () => showPanel('logs') }
     })
   }
 })
@@ -1046,7 +1704,7 @@ let coreReadyLoaded = false
 async function afterCoreReady() {
   await refreshModels()
   await refreshSessions()
-  refreshRunInfo()
+  await refreshDiagnostics()
   if (!$('settings').hidden) await loadSettingsForm() // 弹层开着就顺手把配置读出来
   if (coreReadyLoaded) return // 重启核心后再就绪：只刷新列表，保留当前会话
   coreReadyLoaded = true
@@ -1073,7 +1731,7 @@ async function boot() {
   setCoreState(s.phase ?? 'starting', s)
   for (const e of s.logs ?? []) appendLog(e)
   if (s.phase !== 'ready') {
-    emptyHint('正在启动核心…（就绪后会自动加载会话）')
+    renderBootProgress(state.bootProgress)
     return
   }
   await afterCoreReady()
