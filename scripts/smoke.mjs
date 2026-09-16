@@ -9,6 +9,7 @@
  * 没有配置模型 key 时，prompt.submit 会以 message.complete(status=error) 结束 —— 这属预期，
  * 说明通路正常（能收到完整事件序列）。
  */
+import { writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { Gateway } from '../electron/gateway.js'
@@ -65,6 +66,34 @@ try {
     .catch((e) => ({ ok: false, code: e.code, message: e.message }))
   check('session.cwd.set 设置工作目录', cwdRes.ok, cwdRes.ok ? `cwd=${cwdRes.cwd ?? cwdTarget}` : `code=${cwdRes.code}`)
 
+  // 会话删除/关闭的规则（用独立的临时会话验证，避免影响后面的断言）：
+  //   - 活跃会话（在内存里）不能删 → 4023
+  //   - 客户端应先 session.close 从活跃集合摘掉
+  //   - 只有跑过对话真正落盘的会话才可删（本机无 key，删未落盘会话会得到 4007）
+  const throwaway = await gateway.call('session.create', { cols: 100, title: 'smoke throwaway' })
+  const tsid = throwaway.session_id
+  const delActive = await gateway
+    .call('session.delete', { session_id: tsid })
+    .then(() => ({ ok: true }))
+    .catch((e) => ({ ok: false, code: e.code }))
+  check(
+    '活跃会话不可删（4023；4007 表示该会话尚未落盘）',
+    delActive.ok === false && (delActive.code === 4023 || delActive.code === 4007),
+    `code=${delActive.code}`
+  )
+
+  const closeRes = await gateway
+    .call('session.close', { session_id: tsid })
+    .then((r) => ({ ok: true, closed: r?.closed }))
+    .catch((e) => ({ ok: false, code: e.code }))
+  check('session.close 关闭会话（从活跃集合摘除）', closeRes.ok && closeRes.closed === true, `closed=${closeRes.closed}`)
+
+  const closeAgain = await gateway
+    .call('session.close', { session_id: tsid })
+    .then((r) => ({ ok: true, closed: r?.closed }))
+    .catch(() => ({ ok: false }))
+  check('session.close 幂等（再调用返回 closed=false）', closeAgain.ok && closeAgain.closed === false)
+
   const list = await gateway.call('session.list', {})
   check('session.list', Array.isArray(list?.sessions), `${list?.sessions?.length ?? 0} 个会话`)
 
@@ -94,6 +123,28 @@ try {
   // interrupt 走的是"需要 provider"的路径：未配置模型时核心回 5032 —— 这属于环境未就绪，
   // 不是参数错误（能拿到带码的答复本身说明 RPC 形状被接受）。配置好模型后这里会真正成功。
   const NO_PROVIDER = 5032
+  // ── M2：文件面板 / 会话搜索 / 改名 / 删除 ───────────────────────────────
+  const fsList = await runtime.request('GET', '/api/fs/list?path=' + encodeURIComponent('/tmp'))
+  check('REST /api/fs/list 列目录', Array.isArray(fsList?.entries), `${fsList?.entries?.length ?? 0} 项`)
+
+  const fixture = '/tmp/24h-os-smoke-file.txt'
+  writeFileSync(fixture, 'hello 24H-OS\n')
+  const fileRead = await runtime.request('GET', '/api/files/read?path=' + encodeURIComponent(fixture))
+  check(
+    'REST /api/files/read 读文件（data_url）',
+    typeof fileRead?.data_url === 'string' && String(fileRead.data_url).startsWith('data:'),
+    `size=${fileRead?.size} mime=${fileRead?.mime_type}`
+  )
+
+  const search = await runtime.request('GET', '/api/sessions/search?q=' + encodeURIComponent('smoke'))
+  check('REST /api/sessions/search 会话搜索', Array.isArray(search?.results), `${search?.results?.length ?? 0} 条结果`)
+
+  const renamed = await gateway
+    .call('session.title', { session_id: sid, title: 'smoke 重命名' })
+    .then((r) => ({ ok: true, title: r?.title }))
+    .catch((e) => ({ ok: false, message: e.message }))
+  check('session.title 改名', renamed.ok, renamed.title ?? renamed.message)
+
   const interrupted = await gateway
     .call('session.interrupt', { session_id: sid })
     .then(() => ({ ok: true }))

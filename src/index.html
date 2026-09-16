@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'none'; style-src 'self'; script-src 'self'"
+      content="default-src 'none'; style-src 'self'; script-src 'self'; img-src data:"
     />
     <title>24H</title>
     <link rel="stylesheet" href="./styles.css" />
@@ -19,6 +19,7 @@
       <select class="chip" id="model-select" title="模型">
         <option value="">模型：读取中…</option>
       </select>
+      <button class="icon" id="btn-files" title="文件面板">文件</button>
       <button class="icon" id="btn-logs" title="核心日志">日志</button>
       <button class="icon" id="btn-settings" title="设置">设置</button>
     </header>
@@ -29,7 +30,20 @@
           <button class="primary" id="btn-new">新建会话</button>
           <button id="btn-refresh" title="刷新会话列表">刷新</button>
         </div>
+        <div class="side-search">
+          <input id="search" placeholder="搜索会话…" />
+        </div>
         <div class="sessions" id="sessions"></div>
+      </aside>
+
+      <aside class="files" id="files-panel" hidden>
+        <div class="side-head">
+          <span id="files-path" class="path">—</span>
+          <button id="btn-files-up" title="上一级">↑</button>
+          <button id="btn-files-refresh" title="刷新">⟳</button>
+        </div>
+        <div class="entries" id="entries"></div>
+        <div class="preview" id="preview" hidden></div>
       </aside>
 
       <section class="chat">

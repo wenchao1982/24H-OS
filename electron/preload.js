@@ -28,6 +28,11 @@ contextBridge.exposeInMainWorld('hermes', {
   sessionInterrupt: invoke('session:interrupt'),
   sessionCwdSet: invoke('session:cwdSet'),
   sessionStatus: invoke('session:status'),
+  sessionDelete: invoke('session:delete'),
+  sessionClose: invoke('session:close'),
+  sessionsSearch: invoke('sessions:search'),
+  fsList: invoke('fs:list'),
+  fsRead: invoke('fs:read'),
   sessionTitle: invoke('session:title'),
   send: invoke('chat:send'),
 

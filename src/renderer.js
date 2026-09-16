@@ -19,7 +19,9 @@ const state = {
   tokens: 0,
   cwd: '',
   contract: null,
-  providerReady: null
+  providerReady: null,
+  searchQuery: '',
+  _searchTimer: null
 }
 
 /* ───────────────────── 顶部告警条（兼容性 / 未配置模型）───────────────────── */
@@ -133,16 +135,88 @@ function renderSessions() {
   const box = $('sessions')
   box.textContent = ''
   if (!state.sessions.length) {
-    box.appendChild(el('div', 'empty', '还没有会话'))
+    box.appendChild(el('div', 'empty', state.searchQuery ? '没有匹配的会话' : '还没有会话'))
     return
   }
   for (const s of state.sessions) {
     const row = el('div', 'sess' + (s.id === state.sessionId ? ' active' : ''))
-    row.appendChild(el('div', 't', s.title || s.preview || s.id))
+    const line = el('div', 'row1')
+    const title = el('span', 't', s.title || s.preview || s.id)
+    line.appendChild(title)
+    const acts = el('div', 'acts')
+    const rename = el('button', null, '改名')
+    rename.addEventListener('click', (e) => {
+      e.stopPropagation()
+      startRename(row, title, s.id)
+    })
+    const del = el('button', null, '删除')
+    del.addEventListener('click', (e) => {
+      e.stopPropagation()
+      removeSession(s.id)
+    })
+    acts.appendChild(rename)
+    acts.appendChild(del)
+    line.appendChild(acts)
+    row.appendChild(line)
     row.appendChild(el('div', 'm', `${s.message_count ?? 0} 条 · ${s.id}`))
     row.addEventListener('click', () => activateSession(s.id))
     box.appendChild(row)
   }
+}
+
+/** 行内改名（Electron 里没有 window.prompt） */
+function startRename(row, titleEl, id) {
+  const input = el('input')
+  input.value = titleEl.textContent
+  input.className = 'rename'
+  input.style.cssText = 'width:100%;padding:3px 6px;font-size:12.5px'
+  titleEl.replaceWith(input)
+  input.focus()
+  input.select()
+  const commit = async () => {
+    const value = input.value.trim()
+    const res = value ? await window.hermes.sessionTitle({ session_id: id, title: value }) : { ok: true }
+    if (!res.ok) showBanner(`改名失败：${res.error}`, { error: true })
+    await refreshSessions()
+  }
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      commit()
+    }
+    if (e.key === 'Escape') refreshSessions()
+  })
+  input.addEventListener('blur', commit)
+}
+
+async function removeSession(id) {
+  // 核心不允许删除「活跃会话」（实测错误：cannot delete an active session）→ 先切到别的会话
+  if (id === state.sessionId) {
+    const other = state.sessions.find((s) => s.id !== id)
+    if (other) await activateSession(other.id)
+    else await newSession()
+  }
+  // 核心规则（4023 cannot delete an active session）：会话只要还在内存里就不能删，
+  // 所以先 session.close 把它从活跃集合摘掉，再删。
+  await window.hermes.sessionClose({ session_id: id })
+  const res = await window.hermes.sessionDelete({ session_id: id })
+  if (!res.ok) {
+    showBanner(`删除失败：${res.error}`, { error: true })
+    return
+  }
+  await refreshSessions()
+}
+
+async function runSearch(q) {
+  state.searchQuery = q
+  if (!q) {
+    await refreshSessions()
+    return
+  }
+  const res = await window.hermes.sessionsSearch({ q })
+  if (!res.ok) return
+  state.sessions = res.data?.results ?? []
+  renderSessions()
 }
 
 function renderModelSelect() {
@@ -202,6 +276,7 @@ async function pickCwd() {
     return
   }
   paintCwd(dir)
+  if (!$('files-panel').hidden) await openDir(dir)
   hideBanner()
 }
 
@@ -444,6 +519,77 @@ function onGatewayEvent(evt) {
   }
 }
 
+/* ───────────────────────── 文件面板 ───────────────────────── */
+
+const filesUI = { path: '', entries: [] }
+
+function renderEntries() {
+  const box = $('entries')
+  box.textContent = ''
+  $('files-path').textContent = filesUI.path || '—'
+  if (!filesUI.entries.length) {
+    box.appendChild(el('div', 'empty', '空目录'))
+    return
+  }
+  for (const e of filesUI.entries) {
+    const row = el('div', 'entry')
+    row.appendChild(el('span', 'ico', e.isDirectory ? '📁' : '📄'))
+    row.appendChild(el('span', null, e.name))
+    row.addEventListener('click', () => (e.isDirectory ? openDir(e.path) : openFile(e.path)))
+    box.appendChild(row)
+  }
+}
+
+async function openDir(dir) {
+  $('preview').hidden = true
+  const res = await window.hermes.fsList({ path: dir })
+  if (!res.ok) {
+    showBanner(`列目录失败：${res.error}`, { error: true })
+    return
+  }
+  filesUI.path = dir
+  filesUI.entries = (res.data?.entries ?? []).slice().sort(
+    (a, b) => Number(b.isDirectory) - Number(a.isDirectory) || a.name.localeCompare(b.name)
+  )
+  renderEntries()
+}
+
+async function openFile(file) {
+  const res = await window.hermes.fsRead({ path: file })
+  if (!res.ok) {
+    showBanner(`读取失败：${res.error}`, { error: true })
+    return
+  }
+  const data = res.data ?? {}
+  const box = $('preview')
+  box.hidden = false
+  box.textContent = ''
+  box.appendChild(el('div', null, `${data.name} · ${data.size} B · ${data.mime_type || ''}`))
+  const url = data.data_url || ''
+  if ((data.mime_type || '').startsWith('image/') && url.startsWith('data:image')) {
+    const img = el('img')
+    img.src = url
+    box.appendChild(img)
+    return
+  }
+  const b64 = url.includes(',') ? url.slice(url.indexOf(',') + 1) : ''
+  try {
+    const text = decodeURIComponent(escape(atob(b64)))
+    box.appendChild(el('pre', null, text.slice(0, 20000)))
+  } catch {
+    box.appendChild(el('pre', null, '（二进制或非 UTF-8，已省略）'))
+  }
+}
+
+async function toggleFiles() {
+  const panel = $('files-panel')
+  panel.hidden = !panel.hidden
+  if (!panel.hidden) {
+    if (!filesUI.path && state.cwd) await openDir(state.cwd)
+    else if (!filesUI.path) await openDir('.')
+  }
+}
+
 /* ───────────────────────── 日志 / 状态 ───────────────────────── */
 
 function appendLog(entry) {
@@ -531,6 +677,18 @@ $('btn-logs').addEventListener('click', () => {
   drawer.hidden = !drawer.hidden
 })
 $('btn-cwd').addEventListener('click', pickCwd)
+$('btn-files').addEventListener('click', toggleFiles)
+$('btn-files-refresh').addEventListener('click', () => (filesUI.path ? openDir(filesUI.path) : toggleFiles()))
+$('btn-files-up').addEventListener('click', () => {
+  if (!filesUI.path) return
+  const parent = filesUI.path.replace(/[\\/][^\\/]*$/, '') || '/'
+  openDir(parent)
+})
+$('search').addEventListener('input', (e) => {
+  const q = e.target.value.trim()
+  clearTimeout(state._searchTimer)
+  state._searchTimer = setTimeout(() => runSearch(q), 250)
+})
 $('btn-settings').addEventListener('click', async () => {
   $('settings').hidden = false
   await loadSettingsForm()

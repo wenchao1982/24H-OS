@@ -146,6 +146,15 @@ handle('model:saveKey', gwCall('model.save_key'))
 handle('config:get', () => runtime.request('GET', '/api/config'))
 handle('config:set', (payload) => runtime.request('PUT', '/api/config', payload?.config ?? payload))
 handle('gateway:capabilities', gwCall('gateway.capabilities'))
+handle('session:delete', gwCall('session.delete'))
+handle('session:close', gwCall('session.close'))
+
+// 文件面板与会话搜索走 REST（OpenAPI 里的正式接口，实测 0.21.3）
+handle('fs:list', (payload) => runtime.request('GET', `/api/fs/list?path=${encodeURIComponent(payload?.path ?? '')}`))
+handle('fs:read', (payload) => runtime.request('GET', `/api/files/read?path=${encodeURIComponent(payload?.path ?? '')}`))
+handle('sessions:search', (payload) =>
+  runtime.request('GET', `/api/sessions/search?q=${encodeURIComponent(payload?.q ?? '')}`)
+)
 
 handle('open:external', (url) => shell.openExternal(String(url)))
 

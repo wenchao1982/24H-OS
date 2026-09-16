@@ -52,6 +52,7 @@ select.chip { background: var(--panel); }
 
 /* 主体三栏 */
 main { flex: 1; display: grid; grid-template-columns: 250px 1fr; min-height: 0; }
+main:has(.files:not([hidden])) { grid-template-columns: 250px 1fr 300px; }
 
 /* 侧栏：会话列表 */
 aside { border-right: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; }
@@ -116,3 +117,22 @@ aside .side-head button { flex: 1; }
 }
 .banner.err { background: #2a1513; color: #ffb4ae; border-bottom-color: #5a2320; }
 .banner button { padding: 3px 9px; font-size: 12px; }
+
+/* 会话搜索 */
+.side-search { padding: 8px 10px; border-bottom: 1px solid var(--line-soft); }
+.side-search input { width: 100%; padding: 6px 9px; background: var(--bg); border: 1px solid var(--line); border-radius: 7px; }
+
+/* 右侧文件面板 */
+.files { border-left: 1px solid var(--line); display: flex; flex-direction: column; min-height: 0; grid-column: 3; }
+.files .path { flex: 1; font-size: 11.5px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.entries { overflow: auto; padding: 6px; }
+.entry { padding: 5px 8px; border-radius: 6px; cursor: pointer; font-size: 12.5px; display: flex; gap: 8px; align-items: center; }
+.entry:hover { background: var(--bg-soft); }
+.entry .ico { color: var(--dim-2); width: 14px; text-align: center; }
+.preview { border-top: 1px solid var(--line); max-height: 45%; overflow: auto; padding: 8px 10px; font-family: var(--mono); font-size: 11.5px; white-space: pre-wrap; color: #c8d6e6; }
+.preview img { max-width: 100%; border-radius: 6px; }
+.sess .acts { display: none; gap: 6px; margin-left: auto; }
+.sess:hover .acts { display: flex; }
+.sess { position: relative; }
+.sess .row1 { display: flex; align-items: center; gap: 6px; }
+.acts button { padding: 2px 6px; font-size: 11px; }

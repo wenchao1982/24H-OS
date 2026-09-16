@@ -16,12 +16,21 @@ src/                  渲染进程：会话列表 + 对话流（流式）+ 模�
 scripts/smoke.mjs     无界面冒烟测试（协议层端到端）
 ```
 
-## 功能（M1）
+## 功能
+
+**M1（对话闭环）**
 
 - 会话：新建 / 列表 / 切换 / 历史恢复（运行时被回收时自动 `session.resume` 恢复）
 - 对话：流式输出、思考过程折叠、工具调用卡片（可展开）、停止生成
 - 模型：从核心读服务商与模型，可切换默认模型；设置页可保存 API Key（写进核心配置）
 - 运行状态：核心状态点、端口、WS 通道状态、可展开的核心日志抽屉
+- 健壮性：桌面契约版本对齐告警、未配模型引导、会话工作目录
+
+**M2（会话与文件）**
+
+- 会话搜索（侧栏搜索框，走 `/api/sessions/search`）
+- 会话改名（行内编辑 → `session.title`）与删除（`session.close` → `session.delete`）
+- 文件面板：列目录（`/api/fs/list`）、预览文本与图片（`/api/files/read` 的 `data_url`）、跟随会话工作目录
 
 ## 开发
 
@@ -81,6 +90,21 @@ HERMES_RUNTIME_PYTHON=/path/to/hermes/venv/bin/python npm run probe
 `message.delta`、`reasoning.delta`、`thinking.delta`、`tool.start`、`tool.complete`、
 `message.complete`、`error`。
 （`message.delta` / `reasoning.delta` / `thinking.delta` 的 payload 都是 `{text}`，核心侧以 ~30fps 合批。）
+
+**REST 补充**（文件面板与会话搜索，实测 0.21.3）：
+
+| 端点 | 参数 | 返回 |
+|---|---|---|
+| `GET /api/fs/list` | `path`（必填，缺则 422） | `{entries:[{name,path,isDirectory}]}` |
+| `GET /api/files/read` | `path` | `{name,path,size,mime_type,data_url,…}`（`data_url` 是 base64 data URL） |
+| `GET /api/sessions/search` | `q` | `{results:[…]}` |
+
+**会话生命周期规则**（实测）：
+
+- `session.close` 把会话从活跃集合摘除，返回 `{closed:true}`；已关闭再调返回 `{closed:false}`（幂等）
+- **活跃会话不可删** → `session.delete` 返回 **4023 `cannot delete an active session`**，所以客户端顺序必须是
+  `close` → `delete`
+- 只有真正落盘（跑过一轮对话）的会话才能被列出/删除；未落盘的删会得到 **4007 `session not found`**
 
 **两个必须处理的错误码**：
 
