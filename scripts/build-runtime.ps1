@@ -1,9 +1,12 @@
-# 24H-OS：在 Windows 上构建随包运行时（build-runtime.sh 的 PowerShell 版）
+﻿# 24H-OS：在 Windows 上构建随包运行时（build-runtime.sh 的 PowerShell 版）
 #
 #   powershell -ExecutionPolicy Bypass -File scripts\build-runtime.ps1 -Ref main
 #
 # 为什么不用 .sh：Windows 没有 bash（除非装了 Git Bash）。这个版本只用 PowerShell 5.1 自带能力
-# （Invoke-WebRequest + tar.exe，Win10 1803 起系统自带 tar）。
+# （Invoke-WebRequest / curl.exe / 系统自带 tar.exe）。
+#
+# ⚠️ 本文件必须以 UTF-8 **带 BOM** 保存 —— Windows PowerShell 5.1 在无 BOM 时会按 ANSI(GBK) 读，
+#    中文注释与字符串会变成乱码并引发语法错误（踩过一次）。
 #
 # 关键约束：Hermes 的 setup.py 拒绝构建 wheel/sdist，所以运行时 = 依赖装进 venv + 核心源码树一起放。
 #
@@ -11,9 +14,6 @@
 #   runtime\venv\        只装依赖的虚拟环境
 #   runtime\core\        核心源码树
 #   runtime\.24h-os-runtime.json
-#
-# 注意：本脚本尚未在 Windows 上实测过（写它时手上没有 Windows 环境）——
-#       第一次跑如果报错，把输出发我，我按报错改。
 
 param(
   [string]$Ref = "main",
@@ -30,7 +30,7 @@ $Tgz = Join-Path $Cache "hermes-agent-$SafeRef.tgz"
 $Src = Join-Path $Cache "src-$SafeRef"
 
 Write-Host "==> 构建核心运行时 (Windows)"
-Write-Host "    ref=$Ref  产物=$Runtime"
+Write-Host ("    ref={0}  产物={1}" -f $Ref, $Runtime)
 
 # ── 1. 找 python（3.11–3.13） ────────────────────────────────────────────────
 function Resolve-Python([string]$explicit) {
@@ -40,12 +40,12 @@ function Resolve-Python([string]$explicit) {
   foreach ($c in $cands) {
     $parts = $c.Split(" ")
     $bin = $parts[0]
-    $args = @()
-    if ($parts.Count -gt 1) { $args = $parts[1..($parts.Count - 1)] }
+    $pre = @()
+    if ($parts.Count -gt 1) { $pre = $parts[1..($parts.Count - 1)] }
     try {
-      $ver = & $bin @args -c "import sys;print('%d.%d'%sys.version_info[:2])" 2>$null
+      $ver = & $bin @pre -c "import sys;print('%d.%d'%sys.version_info[:2])" 2>$null
       if ($LASTEXITCODE -eq 0 -and $ver -match "^(3\.11|3\.12|3\.13)$") {
-        return @{ Bin = $bin; Pre = $args; Ver = $ver }
+        return @{ Bin = $bin; Pre = $pre; Ver = $ver }
       }
     } catch { }
   }
@@ -54,16 +54,16 @@ function Resolve-Python([string]$explicit) {
 
 $pyInfo = Resolve-Python $Python
 if (-not $pyInfo) {
-  Write-Error "找不到 Python 3.11–3.13。装一个：winget install Python.Python.3.12，或用 -Python 指定路径。"
+  Write-Error "找不到 Python 3.11-3.13。装一个：winget install Python.Python.3.12，或用 -Python 指定路径。"
 }
-Write-Host "    python $($pyInfo.Ver) ($($pyInfo.Bin) $($pyInfo.Pre -join ' '))"
+Write-Host ("    python {0} ({1} {2})" -f $pyInfo.Ver, $pyInfo.Bin, ($pyInfo.Pre -join " "))
 
 function Invoke-Py([string[]]$PyArgs) {
   $all = @()
   $all += $pyInfo.Pre
   $all += $PyArgs
   & $pyInfo.Bin @all
-  if ($LASTEXITCODE -ne 0) { throw "python 命令失败：$($all -join ' ')" }
+  if ($LASTEXITCODE -ne 0) { throw ("python 命令失败：{0}" -f ($all -join " ")) }
 }
 
 # ── 2. 取源码（codeload，不需要 git 访问 github.com） ─────────────────────────
@@ -72,11 +72,11 @@ if (-not (Test-Path (Join-Path $Src "pyproject.toml"))) {
   if (-not (Test-Path $Tgz)) {
     $url = "https://codeload.github.com/NousResearch/hermes-agent/tar.gz/$Ref"
     Write-Host "==> 下载 $url"
-    # 注意：Windows 自带的 curl.exe 走 schannel，若证书吊销列表（CRL/OCSP）不可达会报
+    # Windows 自带 curl.exe 走 schannel，若证书吊销列表（CRL/OCSP）不可达会报
     # CRYPT_E_NO_REVOCATION_CHECK (0x80092012) —— 用 --ssl-no-revoke 跳过该检查。
     if (Get-Command curl.exe -ErrorAction SilentlyContinue) {
       & curl.exe --ssl-no-revoke -L -o $Tgz $url
-      if ($LASTEXITCODE -ne 0) { throw "下载失败（curl 退出码 $LASTEXITCODE）" }
+      if ($LASTEXITCODE -ne 0) { throw ("下载失败（curl 退出码 {0}）" -f $LASTEXITCODE) }
     } else {
       [System.Net.ServicePointManager]::CheckCertificateRevocationList = $false
       Invoke-WebRequest -Uri $url -OutFile $Tgz -TimeoutSec 600
@@ -90,12 +90,13 @@ if (-not (Test-Path (Join-Path $Src "pyproject.toml"))) {
   if ($LASTEXITCODE -ne 0) { throw "解压失败：确认系统有 tar.exe（Win10 1803+）" }
 }
 
-$coreVer = (Select-String -Path (Join-Path $Src "pyproject.toml") -Pattern '^version\s*=\s*"([^"]+)"' |
-            Select-Object -First 1).Matches.Groups[1].Value
-Write-Host "    核心版本: $coreVer"
+$verLine = Select-String -Path (Join-Path $Src "pyproject.toml") -Pattern '^version\s*=\s*"([^"]+)"' | Select-Object -First 1
+$coreVer = "unknown"
+if ($verLine) { $coreVer = $verLine.Matches.Groups[1].Value }
+Write-Host ("    核心版本: {0}" -f $coreVer)
 
 # ── 3. 拷贝源码树（去掉 tests/website 等，省体积） ───────────────────────────
-Write-Host "==> 拷贝源码树 → runtime\core"
+Write-Host "==> 拷贝源码树 -> runtime\core"
 if (Test-Path $Runtime) { Remove-Item -Recurse -Force $Runtime }
 $coreDir = Join-Path $Runtime "core"
 New-Item -ItemType Directory -Force -Path $coreDir | Out-Null
@@ -118,7 +119,7 @@ foreach ($line in ($block -split "`n")) {
 }
 $depsFile = Join-Path $Runtime "deps.txt"
 $deps | Set-Content -Encoding UTF8 $depsFile
-Write-Host "    $($deps.Count) 个直接依赖"
+Write-Host ("    {0} 个直接依赖" -f $deps.Count)
 
 # ── 5. venv + 装依赖 ────────────────────────────────────────────────────────
 $venv = Join-Path $Runtime "venv"
@@ -144,6 +145,7 @@ $proc = Start-Process -FilePath $venvPy `
   -RedirectStandardOutput $outLog -RedirectStandardError $errLog
 
 $ready = $false
+$port = ""
 for ($i = 0; $i -lt 120; $i++) {
   Start-Sleep -Milliseconds 500
   $text = ""
@@ -160,23 +162,24 @@ if (-not $ready) {
   if (Test-Path $errLog) { Get-Content $errLog -Tail 30 }
   Write-Error "核心没能起来（见上面输出）"
 }
-Write-Host "    核心就绪，端口 $port"
+Write-Host ("    核心就绪，端口 {0}" -f $port)
 
 # ── 7. 元数据 ───────────────────────────────────────────────────────────────
-$sizeMB = [math]::Round(((Get-ChildItem $Runtime -Recurse -Force | Measure-Object -Property Length -Sum).Sum / 1MB), 0)
+$bytes = (Get-ChildItem $Runtime -Recurse -Force -File | Measure-Object -Property Length -Sum).Sum
+$sizeMB = [math]::Round($bytes / 1MB, 0)
 $meta = [ordered]@{
-  schema       = 1
-  coreRef      = $Ref
-  coreVersion  = $coreVer
-  builtAt      = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
-  python       = $pyInfo.Ver
-  pipMirror    = $Mirror
-  layout       = "venv+core-source"
-  platform     = "win32"
+  schema      = 1
+  coreRef     = $Ref
+  coreVersion = $coreVer
+  builtAt     = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+  python      = $pyInfo.Ver
+  pipMirror   = $Mirror
+  layout      = "venv+core-source"
+  platform    = "win32"
 } | ConvertTo-Json -Compress
 $meta | Set-Content -Encoding UTF8 (Join-Path $Runtime ".24h-os-runtime.json")
 
-Write-Host "==> 完成：$Runtime（约 $sizeMB MB）"
+Write-Host ("==> 完成：{0}（约 {1} MB）" -f $Runtime, $sizeMB)
 Write-Host ""
 Write-Host "下一步："
 Write-Host "  npm run smoke    # 壳会自动发现 runtime\ 并跑端到端自检"
