@@ -252,7 +252,7 @@ if (process.argv.includes('--probe')) {
     console.log(`\n✓ 核心就绪，端口 ${port}（${rt.baseUrl}）`)
     console.log('  健康检查:', JSON.stringify(await rt.health()))
     const status = await rt.api('/api/status')
-    console.log(`  /api/status: HTTP ${status.status}`, status.body ? JSON.stringify(status.body).slice(0, 160) : '')
+    console.log('  /api/status:', JSON.stringify(status).slice(0, 180))
   } catch (err) {
     console.error('✗ 启动失败:', err.message)
     process.exitCode = 1

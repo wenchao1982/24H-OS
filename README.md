@@ -11,7 +11,7 @@ Electron 桌面壳，后端使用 [Hermes Agent](https://github.com/NousResearch
 electron/runtime.js   运行时管理：解析 python → 启动核心 → 解析就绪端口 → REST（token 现取）
 electron/gateway.js   WS JSON-RPC 通道：调用/事件/自动重连（对话走这里）
 electron/main.js      主进程：开窗、启动核心、建立通道、IPC 白名单、退出收尾
-electron/preload.js   预加载：暴露最小 window.hermes API 面
+electron/preload.cjs  预加载：暴露最小 window.hermes API 面（**必须 CJS**，见文件头注释）
 src/                  渲染进程：会话列表 + 对话流（流式）+ 模型选择 + 设置（无 Node 权限）
 scripts/smoke.mjs     无界面冒烟测试（协议层端到端）
 ```

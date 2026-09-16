@@ -9,7 +9,7 @@
  * 没有配置模型 key 时，prompt.submit 会以 message.complete(status=error) 结束 —— 这属预期，
  * 说明通路正常（能收到完整事件序列）。
  */
-import { writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
@@ -23,6 +23,24 @@ const results = []
 const check = (name, ok, detail = '') => {
   results.push({ name, ok, detail })
   console.log(`${ok ? '✓' : '✗'} ${name}${detail ? ` — ${detail}` : ''}`)
+}
+
+// ── 起步前的静态护栏（这类问题不会在协议层暴露，但会让界面完全空白）────────────
+{
+  const root = path.resolve(import.meta.dirname, '..')
+  const preload = path.join(root, 'electron', 'preload.cjs')
+  const mainJs = readFileSync(path.join(root, 'electron', 'main.js'), 'utf8')
+  const preloadSrc = existsSync(preload) ? readFileSync(preload, 'utf8') : ''
+  check(
+    'preload 是 CommonJS 的 preload.cjs，且被 main.js 引用',
+    existsSync(preload) && /preload\.cjs/.test(mainJs),
+    existsSync(preload) ? 'preload.cjs 存在' : '缺 electron/preload.cjs'
+  )
+  check(
+    'preload 内没有 ESM import（Electron 按 CJS 加载 preload）',
+    preloadSrc.length > 0 && !/^\s*import\s/m.test(preloadSrc),
+    /^\s*import\s/m.test(preloadSrc) ? '发现 import —— 会加载失败' : '仅 require'
+  )
 }
 
 const runtime = new Runtime({

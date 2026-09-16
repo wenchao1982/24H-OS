@@ -38,7 +38,7 @@ function createWindow() {
     title: '24H',
     backgroundColor: '#0b0f14',
     webPreferences: {
-      preload: path.join(import.meta.dirname, 'preload.js'),
+      preload: path.join(import.meta.dirname, 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true
