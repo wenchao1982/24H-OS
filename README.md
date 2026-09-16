@@ -35,6 +35,13 @@ npm run dev          # 打开窗口（需要图形环境）
 HERMES_RUNTIME_PYTHON=/path/to/hermes/venv/bin/python npm run probe
 ```
 
+### 两个已知的本地环境坑
+
+- **`NODE_ENV=production` 会让 `npm install` 跳过 devDependencies**（Electron 装不上，输出
+  只说 "audited 1 package"）。装依赖时用 `NODE_ENV=development npm install --include=dev`。
+- **国内网络装 Electron 二进制**要指镜像：
+  `ELECTRON_MIRROR=https://registry.npmmirror.com/-/binary/electron/ npm install`。
+
 ## 与核心的对接契约（实测于 Hermes 0.21.0）
 
 | 环节 | 事实 |
