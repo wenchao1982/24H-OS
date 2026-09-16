@@ -105,9 +105,38 @@ npm run dev
 | `tar` 不存在 | Win10 1803+ 自带 `tar.exe`；老系统需装 Git for Windows 后用 Git Bash 跑 `scripts/build-runtime.sh` |
 | pip 装依赖很慢/失败 | 默认走阿里云镜像；可加 `-Mirror https://pypi.tuna.tsinghua.edu.cn/simple/` |
 | `npm run smoke` 报错误码 5032 | 正常 —— 表示还没配模型；这一步只验证协议通路 |
+| `npm install` 提示 `electron@40.10.2 (postinstall: node install.js)` **未被 allowScripts 覆盖** | npm 11 默认拦截依赖安装脚本 → Electron 二进制没下载，`npm run dev` 会失败。见下方「Electron 二进制」小节 |
 | `curl` 报 `CRYPT_E_NO_REVOCATION_CHECK (0x80092012)` | Windows 版 curl 走 schannel，CRL/OCSP 不可达时如此。加 `--ssl-no-revoke`（`build-runtime.ps1` 已内置） |
 | `npm : 无法加载文件 ... npm.ps1，因为在此系统上禁止运行脚本` | PowerShell 执行策略。`Set-ExecutionPolicy -Scope CurrentUser RemoteSigned -Force`，或改用 `npm.cmd` |
 | 杀软拦 node/python 子进程 | 首次运行时允许；企业管控环境把 `C:\dev\24H-OS` 与 `%APPDATA%\24H` 加白 |
+
+### Electron 二进制没装上怎么办
+
+`npm install` 结尾如果出现：
+
+```
+npm warn allow-scripts 2 packages have install scripts not yet covered by allowScripts:
+npm warn allow-scripts   electron@40.10.2 (postinstall: node install.js)
+```
+
+说明 npm 11 的脚本审批机制拦住了 Electron 的 postinstall（**二进制没下载**）。任一方式解决：
+
+```powershell
+# 方式 1：批准后重建
+npm approve-scripts electron
+npm approve-scripts electron-winstaller
+npm rebuild electron
+
+# 方式 2：直接跑它的安装脚本（记得带镜像变量）
+$env:ELECTRON_MIRROR = "https://registry.npmmirror.com/-/binary/electron/"
+node .\node_modules\electron\install.js
+
+# 验证（能打印版本号就成功）
+.\node_modules\electron\dist\electron.exe --version
+```
+
+> 本仓库的 `package.json` 已经用 `allowScripts` 预先批准了这两个包；如果你的 npm 版本更早有这个提示，
+> 按上面任一方式处理即可。
 
 ---
 
