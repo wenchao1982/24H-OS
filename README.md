@@ -9,6 +9,7 @@ Electron 桌面壳，后端使用 [Hermes Agent](https://github.com/NousResearch
 
 - **[`docs/PLAN.md`](docs/PLAN.md) — 24H-OS 制作方案 v1**：上游 Hermes Desktop / Ekko Studio 桌面版架构解读 + 本产品的分层、分发、功能、里程碑（每条结论都带 `路径:行号` 出处）
 - [`docs/WINDOWS.md`](docs/WINDOWS.md) — 在 Windows 上跑起来 / 出安装包
+- [`docs/PROGRESS.md`](docs/PROGRESS.md) — **进度与排期**（M0–M4 状态表、M1 收口清单、按日排期、依赖卡点）
 - [`docs/CORE-CONTRACT.md`](docs/CORE-CONTRACT.md) — 核心契约实测：billing/subscription/free_tier 到底开不开放，以及我们的三条路
 
 ## 目录
