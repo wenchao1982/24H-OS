@@ -265,6 +265,26 @@ check('「外观」分节有三个主题选项', sec3.panes[0] === 'appearance' 
 await page.evaluate(() => document.getElementById('btn-close-settings-x').click())
 await wait(200)
 
+// 设置弹层的几何：滚到最后一个分节时，底部「完成」栏不能被内容压住/裁掉
+await page.click('#btn-settings')
+await wait(300)
+await page.click('#settings-nav button[data-sec="advanced"]')
+await wait(250)
+const geo = await page.evaluate(() => {
+  const foot = document.querySelector('.settings-foot').getBoundingClientRect()
+  const panes = document.querySelector('.settings-panes').getBoundingClientRect()
+  const card = document.querySelector('.settings-card').getBoundingClientRect()
+  const last = document.querySelector('.settings-panes section:not([hidden]) :last-child').getBoundingClientRect()
+  return { footTop: foot.top, panesBottom: panes.bottom, cardBottom: card.bottom, lastBottom: last.bottom }
+})
+check(
+  '设置弹层不裁内容：底部「完成」栏在滚动区之下、卡片之内',
+  geo.footTop >= geo.panesBottom - 1 && geo.footTop <= geo.cardBottom + 1,
+  JSON.stringify(geo)
+)
+await page.evaluate(() => document.getElementById('btn-close-settings-x').click())
+await wait(150)
+
 // IPC 返回值是 {ok,data}，忘了拆包就会显示 undefined（曾把「核心就绪」判成没就绪）
 const header = await page.$eval('#core-state', (el) => el.textContent)
 check('顶部核心状态有真值（不是 undefined）', /ready/.test(header) && !/undefined/.test(header), `“${header}”`)

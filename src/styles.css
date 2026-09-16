@@ -764,7 +764,17 @@ main > .page { grid-column: 2 / -1; grid-row: 1; }
 
 /* ── 设置：左分节 + 右内容 ────────────────────────────────────────────── */
 .settings-card { width: 720px; }
-.settings-body { flex: 1; display: grid; grid-template-columns: 168px minmax(0, 1fr); min-height: 0; }
+.settings-body {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 168px minmax(0, 1fr);
+  /* 关键：网格的隐式行默认是 auto —— 内容一高，行就顶破容器，把底部「完成」栏挤到看不见的地方
+     （实机截图里最后一行提示被裁掉一半就是这么来的）。用 minmax(0, 1fr) 把行锁在容器内，
+     由 .settings-panes 自己滚。 */
+  grid-template-rows: minmax(0, 1fr);
+  min-height: 0;
+  overflow: hidden;
+}
 .settings-nav {
   display: flex;
   flex-direction: column;
@@ -785,6 +795,7 @@ main > .page { grid-column: 2 / -1; grid-row: 1; }
 .settings-nav button:hover:not(:disabled) { background: var(--surface-hover); color: var(--fg); }
 .settings-nav button.active { background: var(--surface); color: var(--fg); font-weight: 600; }
 .settings-panes { padding: var(--s5); overflow: auto; min-height: 0; }
+.settings-nav { min-height: 0; overflow: auto; }
 .settings-foot {
   flex: none;
   display: flex;
