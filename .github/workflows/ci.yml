@@ -1,19 +1,10 @@
-# ⚠️ 这是**模板**，不在 .github/workflows/ 下（原因见下）。
-# 启用方式：把它复制成 .github/workflows/ci.yml 再提交。
-#   · 用 Git 客户端推 → 直接可用；
-#   · 用 API + fine-grained PAT 推 → 该 PAT 需要两样权限：
-#       ① Contents: Read and write（推任何文件都要）
-#       ② Workflows: Read and write（只要路径涉及 .github/workflows/* 就要，否则 GitHub 直接回
-#          403 Resource not accessible by personal access token）
-#     本项目当前用的 token 只有 ①，所以 CI 文件放在这里；这也是 scripts/push-24h-os.py 跳过该目录的原因。
-# 两个 job 都不需要图形环境和核心运行时：
+# CI：把"能机械验证的部分"固化下来（两个 job 都不需要图形环境与核心运行时）
 #   static —— 静态护栏 + 与核心契约的比对（node scripts/smoke.mjs --static）
 #   ui     —— 下 chrome-headless-shell 跑真浏览器渲染检查（node scripts/ui-smoke.mjs）
-# CI：把"能机械验证的部分"固化下来。
-# 刻意分成两个 job：
-#   static —— 不需要核心运行时（静态护栏 + 契约比对），任何 runner 都能跑
-#   ui     —— 不需要图形界面：下 chrome-headless-shell 跑真浏览器渲染检查
-# （需要核心的端到端冒烟跑在开发机/打包机上：npm run smoke，见 docs/WINDOWS.md）
+#
+# ⚠️ 用 API + fine-grained PAT 推送本文件时，该 PAT 需要 **Workflows: Read and write** 权限
+#    （GitHub 对 .github/workflows/* 单独要权限，否则整次推送会 403；
+#      scripts/push-24h-os.py 已做兜底：遇到 403 会自动跳过该目录并给出警告）。
 name: ci
 
 on:

@@ -14,6 +14,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { Gateway } from '../electron/gateway.js'
+import { callWithSessionRemap } from '../electron/session-remap.mjs'
 import { Runtime } from '../electron/runtime.js'
 
 /** 跨平台临时目录：Windows 上 '/tmp' 会被解析成 C:\tmp（多半不存在），必须用系统临时目录 */
@@ -206,8 +207,19 @@ try {
   const hist = await gcall('session.history', { session_id: sid })
   check('session.history 结构 {count,messages}', Array.isArray(hist?.messages), `count=${hist?.count}`)
 
-  const models = await gcall('model.options')
-  check('model.options 返回服务商列表', Array.isArray(models?.providers), `${models?.providers?.length ?? 0} 个服务商`)
+  // 注意：WS 的 model.options 只返回"已认证"的服务商，且会去探测服务商（可能长时间卡在网络）。
+  // 壳实际用的是 REST 的完整目录（下一段就测它），这里改用 REST 版，既不碰网络也更贴近产品行为。
+  let models
+  try {
+    models = await runtime.request('GET', '/api/model/options?include_unconfigured=1')
+  } catch (err) {
+    models = { __error: err.message }
+  }
+  check(
+    '服务商目录可读（REST，壳用的就是这个）',
+    Array.isArray(models?.providers),
+    models?.__error ?? `${models?.providers?.length ?? 0} 个服务商（含未配置）`
+  )
 
   // ── 服务商目录（设置页依赖它）────────────────────────────────────────────
   // 实机踩过：不带 include_unconfigured 时，全新安装只返回 moa/opencode-free 这类虚拟/内置项，
@@ -331,6 +343,31 @@ try {
     .then(() => ({ ok: true }))
     .catch((e) => ({ ok: false, code: e.code }))
   check('未知 session_id 返回 4001（可识别的错误码）', bogus.ok === false && bogus.code === 4001, `code=${bogus.code}`)
+
+  // 恢复路径的真实形态：会话被运行时回收后，用 stored id 调任何方法都会 4001，
+  // 必须 resume → 用**返回的新 id** 重试（壳里就是 electron/session-remap.mjs 这段逻辑）。
+  const stored0 = (await gcall('session.list', {}))?.sessions?.[0]?.id
+  if (stored0) {
+    await gcall('session.close', { session_id: stored0 }).catch(() => {})
+    const staleCode = await gateway
+      .call('session.history', { session_id: stored0 })
+      .then(() => null)
+      .catch((e) => e.code)
+    let remap = null
+    const retried = await callWithSessionRemap(
+      (m, p) => gateway.call(m, p),
+      'session.history',
+      { session_id: stored0 },
+      { onRemap: (from, to) => { remap = { from, to } } }
+    ).then((r) => ({ ok: true, count: r?.count })).catch((e) => ({ ok: false, code: e.code, message: e.message }))
+    check(
+      '会话被回收后：4001 → resume → 用新 id 重试成功（壳的恢复逻辑）',
+      (staleCode === 4001 || staleCode === null) && retried.ok,
+      `stale=${staleCode ?? '可直读'} remap=${remap ? `${remap.from}→${remap.to}` : '未触发'} retried=${retried.ok ? `count=${retried.count}` : retried.code}`
+    )
+  } else {
+    check('会话被回收后：4001 → resume → 用新 id 重试成功（壳的恢复逻辑）', false, '这个 home 里没有可测的 stored 会话，跳过')
+  }
 
   const stored = (await gcall('session.list', {}))?.sessions?.[0]?.id
   if (stored) {

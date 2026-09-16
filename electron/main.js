@@ -6,6 +6,7 @@
 import { BrowserWindow, Menu, app, clipboard, dialog, ipcMain, shell } from 'electron'
 import fs from 'node:fs'
 import path from 'node:path'
+import { callWithSessionRemap } from './session-remap.mjs'
 import { Gateway } from './gateway.js'
 import { Runtime } from './runtime.js'
 
@@ -116,16 +117,10 @@ function handle(channel, fn) {
  *  自动用同一个 id 走 session.resume 后重试一次 —— 这是核心要求客户端做的恢复动作。 */
 const gwCall = (method) => async (payload = {}) => {
   if (!gateway) throw new Error('核心尚未就绪')
-  try {
-    return await gateway.call(method, payload ?? {})
-  } catch (err) {
-    const sid = payload?.session_id
-    if (err.code === 4001 && sid && method !== 'session.resume') {
-      await gateway.call('session.resume', { session_id: sid, cols: 100 })
-      return gateway.call(method, payload)
-    }
-    throw err
-  }
+  return callWithSessionRemap((m, params) => gateway.call(m, params), method, payload ?? {}, {
+    // id 变了对渲染层是重要信息：它得把后续调用切到新 id，否则会一直 4001
+    onRemap: (from, to) => send('session:remapped', { from, to })
+  })
 }
 
 handle('runtime:state', () => ({ ...lastState, logs: logBuffer.slice(-300) }))

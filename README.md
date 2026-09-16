@@ -26,7 +26,7 @@ scripts/after-pack.mjs / verify-package.mjs   打包时与打包后的自检
 scripts/gen-contract.mjs      从核心抓契约快照 → electron/contract.generated.json
 scripts/write-runtime-manifest.mjs / verify-runtime.mjs   运行时清单写入与体检（共用 lib/runtime-tree.mjs）
 scripts/make-icons.py         从 build/icon.png 生成 build/icon.ico
-docs/ci/ci.yml                 CI 模板（静态护栏 + 契约比对 + 界面层冒烟）；启用时复制到 .github/workflows/
+.github/workflows/ci.yml       CI：静态护栏 + 契约比对 + 界面层冒烟（推送该文件需要 token 的 Workflows 权限）
 ```
 
 ## 功能

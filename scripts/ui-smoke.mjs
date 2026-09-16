@@ -70,6 +70,8 @@ const RESP = {
   },
   sessionsList: { sessions: [{ id: 's1', title: '冒烟会话', message_count: 2 }] },
   sessionsCreate: { session_id: 's-new', info: { model: 'deepseek-chat' } },
+  // 关键：核心给的运行时 id（rt-9）与列表里的 stored id（s1）**不同** —— 实机上就是这个差异导致 4001
+  sessionActivate: { session_id: 'rt-9', info: { model: 'deepseek-chat', cwd: '/tmp/demo', desktop_contract: 7 } },
   sessionHistory: {
     count: 2,
     messages: [
@@ -116,6 +118,7 @@ const page = await browser.newPage()
 page.on('pageerror', (e) => console.log('  [pageerror]', e.message))
 await page.evaluateOnNewDocument((RESP) => {
   window.__calls = []
+  window.__lastArgs = {}
   window.__handlers = {}
   window.hermes = new Proxy({}, {
     get(_t, key) {
@@ -123,6 +126,11 @@ await page.evaluateOnNewDocument((RESP) => {
       if (name.startsWith('on')) return (cb) => { window.__handlers[name] = cb; return () => {} }
       return (...args) => {
         window.__calls.push(name)
+        window.__lastArgs[name] = args[0]
+        // 模拟"核心只认运行时 id"：拿 stored id 读历史就 4001（用户实机就是这么踩的）
+        if (name === 'sessionHistory' && args[0]?.session_id !== 'rt-9') {
+          return Promise.resolve({ ok: false, error: 'session not found', code: 4001 })
+        }
         return Promise.resolve({ ok: true, data: RESP[name] ?? {} })
       }
     }
@@ -156,6 +164,15 @@ check('核心就绪后补拉了模型列表', calls.includes('modelsList'), call
 check('核心就绪后补拉了会话列表', calls.includes('sessionsList'))
 const modelOpts = await page.$$eval('#model-select option', (o) => o.map((x) => x.textContent))
 check('没配 Key 时模型下拉给出明确下一步（不是空白）', modelOpts.some((t) => t.includes('设置')), modelOpts.join(' | '))
+const histArg = await page.evaluate(() => window.__lastArgs.sessionHistory)
+check(
+  '读历史用的是核心返回的运行时 id（用 stored id 会 4001 —— 实机踩过的那个 bug）',
+  histArg?.session_id === 'rt-9',
+  `sessionHistory(session_id=${histArg?.session_id ?? '未调用'})`
+)
+const activeRow = await page.evaluate(() => document.querySelector('#sessions .sess.active')?.textContent ?? null)
+check('会话列表高亮仍按 stored id（id 换过之后高亮不丢）', Boolean(activeRow), activeRow ? activeRow.slice(0, 24) : '没有高亮行')
+
 const sessRows = await page.$$eval('#sessions > *', (n) => n.length)
 check('会话列表渲染出 1 条', sessRows === 1, `行数=${sessRows}`)
 

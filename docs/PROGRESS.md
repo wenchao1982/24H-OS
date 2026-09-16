@@ -41,7 +41,7 @@
 | 打包自检读清单并核对（缺字段给告警） | ✅ | `afterPack` + `npm run verify:package`（本机实跑通过） |
 | 契约快照与比对（防方法/事件名写错） | ✅ | `scripts/gen-contract.mjs` → `electron/contract.generated.json`（217 方法/69 事件）；`smoke --static` 12→13 条护栏 |
 | 运行时回退（新运行时起不来就退回 `runtime.prev`） | ✅ | 实验：坏的 `runtime` + 好的 `runtime.prev` → 壳成功回退启动 |
-| CI（静态护栏 + 契约比对 + 无头界面冒烟） | ✅（模板就绪） | `docs/ci/ci.yml` 两个 job；启用需复制到 `.github/workflows/`（并给 PAT 加 Workflows 权限，否则 GitHub 对该路径回 403） |
+| CI（静态护栏 + 契约比对 + 无头界面冒烟） | ✅ | `.github/workflows/ci.yml`（两个 job，都不需要图形环境与核心运行时）；推送该文件要求 token 有 **Workflows: Read and write**，推送脚本已做 403 自动降级 |
 | 壳自更新（electron-updater） | 🟡 已接线 | `electron-updater` 进 dependencies；没配更新源时"检查更新"给人话；**差** `build.publish` 指向分发源 |
 | 核心独立升级（运行时资产化：**下载** + sha256 + 落到 `runtime.<版本>`） | ⬜ 只差下载那一段 | 需要先有分发源（对象存储/CDN）；本地切换与校验已完成 |
 
@@ -87,6 +87,15 @@
 
 ## 6. 变更记录
 
+- 2026-09-16（第六次）：修用户实机报的「读取历史失败: session not found」。
+  真因：核心有**两套 id** —— 列表里的 stored id 与运行时的 session_id。`session.resume` 之后运行时 id 会**变**，
+  而壳里原来的恢复逻辑是"resume 完拿**旧 id** 重试"，等于白重试；渲染层读历史时也用的是 stored id。
+  修法：`electron/session-remap.mjs`（resume → 用返回的新 id 重试 → 把新 id 推给渲染层），
+  渲染层区分 `sessionId`（列表/高亮）与 `runtimeSessionId`（所有核心调用）。
+  证据：`smoke` 打真核心跑出 `stale=4001 remap=20260916_225246_8d6eec→228a5966 retried=count=0`（45/45）；
+  `ui-smoke` 的桩改成"history 只认运行时 id，用 stored id 就 4001"（37/37）。
+  另外：错误态不再转圈（`.empty.static`），读取失败走 `explainError` 给人话。
+
 - 2026-09-16（第五次）：
   - 运行时清单**写入与校验改成同一个实现**（`scripts/lib/runtime-tree.mjs`；此前 bash 与 JS 各算一套、
     排序与行尾不同 → 永远对不上，现已实测一致）；新增 `npm run verify:runtime`（指纹/结构/体积体检）。
@@ -94,8 +103,9 @@
     可手动切换并重启核心（选择存 `ui-prefs.json`）；实测 `pinnedRoot` 生效，指向不存在/坏目录时自动兜底。
   - 模块调整：删掉 `scripts/write-runtime-manifest.sh|ps1`（避免两套实现再分叉），改由 Node 版统一生成。
   - 「文件访问路径白名单」**明确不做**（理由见 PLAN F5：本机应用里它挡不住真风险、只添堵）。
-  - 说明：新给的 PAT 权限不足（只能读，建 blob 即 403），推送继续用旧 token（缺 Workflows 权限，
-    所以 CI 仍是 `docs/ci/ci.yml` 模板）。
+  - 说明：token 折腾了几轮（旧 token 被 regenerate 作废；中间一版只有 Contents: Read，建 blob 403）。
+    最终版本同时具备 **Contents: Read and write** 与 **Workflows: Read and write**，
+    于是 CI 文件从 `docs/ci/ci.yml` 模板挪回真路径 `.github/workflows/ci.yml`。
 
 - 2026-09-16（第四次）：用户决定**暂不买签名证书，先进内测**。
   同时修掉用户截图里暴露的一个界面 bug：设置弹层最后一个分节的内容被底部「完成」栏裁掉半个字

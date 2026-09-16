@@ -91,5 +91,7 @@ contextBridge.exposeInMainWorld('hermes', {
   onState: on('runtime:state'),
   onGatewayStatus: on('gateway:status'),
   onEvent: on('gateway:event'),
-  onBootProgress: on('boot:progress')
+  onBootProgress: on('boot:progress'),
+  // 核心把会话装回运行时后 id 会变（stored id → runtime id），渲染层必须跟着换
+  onSessionRemapped: on('session:remapped')
 })

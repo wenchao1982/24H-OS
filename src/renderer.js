@@ -3,6 +3,8 @@
  * 只通过 window.hermes 与主进程通信；所有调用返回 {ok,data} | {ok,error}。
  */
 const $ = (id) => document.getElementById(id)
+/** 调核心时用的会话 id：优先运行时 id（resume 之后 stored id 会失效） */
+const rid = () => state.runtimeSessionId ?? state.sessionId
 const LIMIT = { MESSAGES: 400, LOGS: 300 }
 
 /** 当前版本只对外提供 DeepSeek：设置里的服务商、模型下拉都按这张白名单过滤。
@@ -37,7 +39,8 @@ function persistTheme(pref) {
 const EXPECTED_DESKTOP_CONTRACT = 7
 
 const state = {
-  sessionId: null, // 当前活跃会话（核心给的短 id）
+  sessionId: null, // 列表里的会话 id（磁盘会话，稳定；高亮/匹配用它）
+  runtimeSessionId: null, // 核心当前持有的运行时 id（所有核心调用用它；resume 后可能不同）
   sessions: [],
   providers: [],
   keyProviders: [], // 能填 API Key 的服务商（设置页用）
@@ -315,9 +318,9 @@ function clearThread() {
   thread.textContent = ''
 }
 
-function emptyHint(text) {
+function emptyHint(text, { spinning = true } = {}) {
   clearThread()
-  thread.appendChild(el('div', 'empty', text))
+  thread.appendChild(el('div', spinning ? 'empty' : 'empty static', text))
 }
 
 /* ───────────────────── 渲染：会话列表 / 模型 ───────────────────── */
@@ -781,7 +784,7 @@ function paintCwd(cwd) {
 async function pickCwd() {
   const dir = await window.hermes.pickDirectory()
   if (!dir) return
-  const res = await window.hermes.sessionCwdSet({ session_id: state.sessionId, cwd: dir })
+  const res = await window.hermes.sessionCwdSet({ session_id: rid(), cwd: dir })
   if (!res.ok) {
     showBanner(`设置工作目录失败：${res.error}`, { error: true })
     return
@@ -822,7 +825,8 @@ async function newSession() {
     emptyHint(`新建会话失败：${res.error}`)
     return
   }
-  state.sessionId = res.data?.session_id ?? null
+  state.runtimeSessionId = res.data?.session_id ?? null
+  state.sessionId = res.data?.session_id ?? null // 新建会话时两者相同（还没落盘）
   state.model = res.data?.info?.model || state.model
   checkContract(res.data?.info)
   paintCwd(res.data?.info?.cwd)
@@ -836,21 +840,31 @@ async function activateSession(id) {
   let res = await window.hermes.sessionActivate({ session_id: id, cols: 100 })
   if (!res.ok) res = await window.hermes.sessionResume({ session_id: id, cols: 100 })
   if (!res.ok) {
-    emptyHint(`切换会话失败：${res.error}`)
+    emptyHint(`切换会话失败：${explainError(res.error, res.code)}`, { spinning: false })
     return
   }
-  state.sessionId = res.data?.session_id ?? id
+  state.sessionId = id // 列表里的 id（高亮用）
+  state.runtimeSessionId = res.data?.session_id ?? id // 核心的运行时 id（后续调用用它）
   checkContract(res.data?.info)
   paintCwd(res.data?.info?.cwd)
-  await loadHistory(id)
+  await loadHistory(state.runtimeSessionId)
   renderSessions()
   refreshUsage()
 }
 
 async function loadHistory(id) {
-  const res = await window.hermes.sessionHistory({ session_id: id })
+  const target = id ?? rid()
+  let res = await window.hermes.sessionHistory({ session_id: target })
+  if (!res.ok && (res.code === 4001 || /session not found/i.test(res.error ?? ''))) {
+    // 运行时不再持有它：让核心把它装回来（main 侧会做 resume 并把新 id 推给我们）
+    const resumed = await window.hermes.sessionResume({ session_id: state.sessionId ?? target, cols: 100 })
+    if (resumed.ok && resumed.data?.session_id) {
+      state.runtimeSessionId = resumed.data.session_id
+      res = await window.hermes.sessionHistory({ session_id: state.runtimeSessionId })
+    }
+  }
   if (!res.ok) {
-    emptyHint(`读取历史失败：${res.error}`)
+    emptyHint(`读取历史失败：${explainError(res.error, res.code)}`, { spinning: false })
     return
   }
   const messages = res.data?.messages ?? []
@@ -886,7 +900,7 @@ async function send() {
   setBusy(true)
   scrollToEnd()
 
-  const res = await window.hermes.send({ session_id: state.sessionId, text })
+  const res = await window.hermes.send({ session_id: rid(), text })
   if (!res.ok) {
     pushStreamError(res.error)
     finishStream()
@@ -1509,7 +1523,7 @@ async function refreshUsage() {
     $('context-usage').textContent = ''
     return
   }
-  const res = await window.hermes.sessionUsage({ session_id: state.sessionId }).catch(() => ({ ok: false }))
+  const res = await window.hermes.sessionUsage({ session_id: rid() }).catch(() => ({ ok: false }))
   if (!res.ok) {
     $('context-usage').textContent = ''
     return
@@ -1553,7 +1567,7 @@ $('btn-refresh').addEventListener('click', refreshSessions)
 $('btn-send').addEventListener('click', send)
 $('btn-stop').addEventListener('click', async () => {
   if (!state.sessionId) return
-  await window.hermes.sessionInterrupt({ session_id: state.sessionId })
+  await window.hermes.sessionInterrupt({ session_id: rid() })
   finishStream()
 })
 $('btn-cwd').addEventListener('click', pickCwd)
@@ -1737,6 +1751,11 @@ window.hermes.onRuntimeError(({ message }) => {
 window.hermes.onRuntimeExit(() => setCoreState('exited'))
 window.hermes.onLog(appendLog)
 window.hermes.onGatewayStatus(({ connected }) => setGatewayState(connected))
+window.hermes.onSessionRemapped?.(({ from, to }) => {
+  // 核心把会话装回运行时后 id 会变；不改就会一直 4001（实机上表现为"读取历史失败"）
+  state.runtimeSessionId = to
+  logLines.push(`[壳] 会话 id 已重映射：${from} → ${to}`)
+})
 window.hermes.onEvent(onGatewayEvent)
 
 /* ───────────────────────── 启动 ───────────────────────── */
