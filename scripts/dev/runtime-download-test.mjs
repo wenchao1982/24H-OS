@@ -17,11 +17,13 @@ import { installRuntimeAsset, fetchDistManifest } from '../../electron/runtime-d
 
 const ROOT = path.resolve(import.meta.dirname, '..', '..')
 const args = process.argv.slice(2)
+const externalBase = args.includes('--base') ? args[args.indexOf('--base') + 1] : null
 const assetsDir = path.resolve(ROOT, args.includes('--assets') ? args[args.indexOf('--assets') + 1] : 'dist-assets')
-if (!existsSync(path.join(assetsDir, 'runtime-manifest.json'))) {
+if (!externalBase && !existsSync(path.join(assetsDir, 'runtime-manifest.json'))) {
   console.error(`dist-assets 里没有 runtime-manifest.json：先跑 npm run package:runtime（当前目录 ${assetsDir}）`)
   process.exit(2)
 }
+if (externalBase) console.log(`使用外部（真实）分发源：${externalBase} —— 本地静态服务与篡改反例将跳过\n`)
 
 const results = []
 const check = (name, ok, detail = '') => {
@@ -48,8 +50,8 @@ const server = createServer((req, res) => {
   res.end(body)
 })
 await new Promise((r) => server.listen(0, '127.0.0.1', r))
-const base = `http://127.0.0.1:${server.address().port}`
-console.log(`静态分发源：${base}（目录 ${path.relative(ROOT, assetsDir)}）\n`)
+const base = externalBase ?? `http://127.0.0.1:${server.address().port}`
+console.log(externalBase ? '' : `静态分发源：${base}（目录 ${path.relative(ROOT, assetsDir)}）\n`)
 
 const runtimesRoot = path.join(os.tmpdir(), `24h-runtimes-${Date.now()}`)
 mkdirSync(runtimesRoot, { recursive: true })
@@ -84,7 +86,11 @@ try {
   }
   check('落地后的运行时能 import 核心包', /^\d+\.\d+/.test(probe), `python ${probe}`)
 
-  // ⑤ 反例：sha256 被篡改必须拒绝，且不留半成品
+  // ⑤ 反例：sha256 被篡改必须拒绝，且不留半成品（仅本地模式；外部源我们改不了它的清单）
+  if (externalBase) {
+    console.log('（外部源模式：跳过 sha256 反例）')
+    throw { __skip: true }
+  }
   const realManifest = JSON.parse(readFileSync(path.join(assetsDir, 'runtime-manifest.json'), 'utf8'))
   overrideManifest = { ...realManifest, sha256: 'deadbeef'.repeat(8) }
   let rejected = ''
@@ -99,6 +105,8 @@ try {
     return readdirSync(runtimesRoot).filter((n) => n.startsWith('.staging-'))
   })() : []
   check('sha256 不对时拒绝安装且不留半成品', /sha256 校验失败/.test(rejected) && leftovers.length === 0, `${rejected.slice(0, 60)}；残留暂存目录 ${leftovers.length} 个`)
+} catch (err) {
+  if (!err || !err.__skip) throw err
 } finally {
   server.close()
   rmSync(runtimesRoot, { recursive: true, force: true })

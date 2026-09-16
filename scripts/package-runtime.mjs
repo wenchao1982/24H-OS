@@ -43,8 +43,10 @@ try {
 const coreVersion = manifest.coreVersion ?? 'unknown'
 const platform = platformOverride ?? manifest.platform ?? `${process.platform}-${process.arch}`
 const name = `hermes-runtime-${coreVersion}-${platform}.tar.gz`
-mkdirSync(outDir, { recursive: true })
-const archive = path.join(outDir, name)
+// 按平台分子目录：分发源上多平台并存（win-x64 / linux-x64 / mac-arm64 …），客户端只取自己那份
+const platDir = path.join(outDir, platform)
+mkdirSync(platDir, { recursive: true })
+const archive = path.join(platDir, name)
 
 // tar -czf（Linux/macOS 自带；Windows 10+ 自带 tar.exe）；排除 venv 里的 __pycache__ 省点体积
 const excludes = ['--exclude=**/__pycache__', '--exclude=**/*.pyc', '--exclude=.git']
@@ -69,8 +71,8 @@ const assetManifest = {
   builtAt: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
   layout: manifest.layout ?? 'venv+core-source'
 }
-writeFileSync(path.join(outDir, 'runtime-manifest.json'), JSON.stringify(assetManifest, null, 2) + '\n', 'utf8')
+writeFileSync(path.join(platDir, 'runtime-manifest.json'), JSON.stringify(assetManifest, null, 2) + '\n', 'utf8')
 
 console.log(`✓ ${path.relative(root, archive)}  ${(size / 1024 / 1024).toFixed(0)} MB`)
-console.log(`  sha256=${sha256.slice(0, 16)}…  清单=${path.relative(root, path.join(outDir, 'runtime-manifest.json'))}`)
-console.log(`  分发源目录里应放这三个文件：${name} / ${name}.sha256 / runtime-manifest.json`)
+console.log(`  sha256=${sha256.slice(0, 16)}…  清单=${path.relative(root, path.join(platDir, 'runtime-manifest.json'))}`)
+console.log(`  分发源上放到 <base>/${platform}/ 下：${name} / ${name}.sha256 / runtime-manifest.json`)

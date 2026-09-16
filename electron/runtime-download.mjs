@@ -23,13 +23,36 @@ const fetchJson = async (url, timeoutMs = 20000) => {
   return res.json()
 }
 
-/** 读分发源上的 runtime-manifest.json */
-export async function fetchDistManifest(baseUrl) {
+/** 当前平台标识（与 package-runtime 的产物一致：win-x64 / linux-x64 / darwin-arm64 …） */
+export function platformKey(platformName = process.platform, arch = process.arch) {
+  if (platformName === 'win32') return 'win-x64'
+  if (platformName === 'darwin') return `darwin-${arch}`
+  return `${platformName}-${arch}`
+}
+
+/**
+ * 读分发源上的清单。
+ * 约定：分发源按平台分目录 —— <base>/<平台>/runtime-manifest.json（多平台并存互不覆盖）。
+ * 兼容"直接把清单放 base 下"的老写法；平台不匹配就拒绝（装上了也跑不起来）。
+ */
+export async function fetchDistManifest(baseUrl, { platform = platformKey() } = {}) {
   const base = String(baseUrl || '').replace(/\/+$/, '')
   if (!base) throw new Error('没有配置分发源地址')
-  const manifest = await fetchJson(`${base}/runtime-manifest.json`)
+  let manifest = null
+  let usedBase = `${base}/${platform}`
+  try {
+    manifest = await fetchJson(`${usedBase}/runtime-manifest.json`)
+  } catch {
+    usedBase = base
+    manifest = await fetchJson(`${base}/runtime-manifest.json`).catch(() => {
+      throw new Error(`取清单失败：${base}/${platform}/runtime-manifest.json 与 ${base}/runtime-manifest.json 都读不到`)
+    })
+  }
   if (!manifest?.name || !manifest?.sha256) throw new Error('分发源的清单里缺 name / sha256 字段')
-  return { ...manifest, url: `${base}/${manifest.name}` }
+  if (manifest.platform && manifest.platform !== platform) {
+    throw new Error(`分发源上的是 ${manifest.platform} 资产，当前机器是 ${platform}（放对应平台的目录）`)
+  }
+  return { ...manifest, url: `${usedBase}/${manifest.name}` }
 }
 
 /** 流式下载并按 sha256 校验；返回落盘的临时文件路径 */
