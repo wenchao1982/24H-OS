@@ -43,7 +43,10 @@
 | 运行时回退（新运行时起不来就退回 `runtime.prev`） | ✅ | 实验：坏的 `runtime` + 好的 `runtime.prev` → 壳成功回退启动 |
 | CI（静态护栏 + 契约比对 + 无头界面冒烟） | ✅ | `.github/workflows/ci.yml`（两个 job，都不需要图形环境与核心运行时）；推送该文件要求 token 有 **Workflows: Read and write**，推送脚本已做 403 自动降级 |
 | 壳自更新（electron-updater） | 🟡 已接线 | `electron-updater` 进 dependencies；没配更新源时"检查更新"给人话；**差** `build.publish` 指向分发源 |
-| 核心独立升级（运行时资产化：**下载** + sha256 + 落到 `runtime.<版本>`） | ⬜ 只差下载那一段 | 需要先有分发源（对象存储/CDN）；本地切换与校验已完成 |
+| 运行时资产化：**产出**（`npm run package:runtime` → 100MB 资产 + sha256 + 清单） | ✅ | 本机实跑，336MB→100MB |
+| 运行时资产化：**下载**（下载 → sha256 校验 → 解压 → 原子落地） | ✅ | 端到端 4/4，含「落地后的 python 真能 import 核心包」与「sha256 篡改必拒、不留半成品」 |
+| 壳里的分发源 UI（设置 → 高级：填地址 / 检查更新 / 下载并安装） | ✅ | `ui-smoke 39/39` |
+| 公网分发源（放到服务器上让别的机器下载） | ⏳ 等你 | 服务器只开了 frp 控制端口 7000；需在 fnOS 的 frpc 应用里加一条 TCP 代理 |
 
 **已用能力**：核心 217 个 gateway 方法里用了 15 个、69 个事件里用了 11 个、227 个 REST 端点里用了 9 个。
 → 后续路线是"把核心已有能力搬进 UI"，不是自研（`session.usage`/`session.undo`/`session.foreign.*`/`profiles.*` 等都还没接）。
