@@ -10,10 +10,14 @@
  * 说明通路正常（能收到完整事件序列）。
  */
 import { writeFileSync } from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { Gateway } from '../electron/gateway.js'
 import { Runtime } from '../electron/runtime.js'
+
+/** 跨平台临时目录：Windows 上 '/tmp' 会被解析成 C:\tmp（多半不存在），必须用系统临时目录 */
+const TMP = os.tmpdir()
 
 const results = []
 const check = (name, ok, detail = '') => {
@@ -59,7 +63,7 @@ try {
   )
 
   // 工作目录：壳的「工作目录」按钮走 session.cwd.set
-  const cwdTarget = '/tmp'
+  const cwdTarget = TMP
   const cwdRes = await gateway
     .call('session.cwd.set', { session_id: sid, cwd: cwdTarget })
     .then((r) => ({ ok: true, cwd: r?.info?.cwd ?? r?.cwd }))
@@ -124,10 +128,10 @@ try {
   // 不是参数错误（能拿到带码的答复本身说明 RPC 形状被接受）。配置好模型后这里会真正成功。
   const NO_PROVIDER = 5032
   // ── M2：文件面板 / 会话搜索 / 改名 / 删除 ───────────────────────────────
-  const fsList = await runtime.request('GET', '/api/fs/list?path=' + encodeURIComponent('/tmp'))
+  const fsList = await runtime.request('GET', '/api/fs/list?path=' + encodeURIComponent(TMP))
   check('REST /api/fs/list 列目录', Array.isArray(fsList?.entries), `${fsList?.entries?.length ?? 0} 项`)
 
-  const fixture = '/tmp/24h-os-smoke-file.txt'
+  const fixture = path.join(TMP, '24h-os-smoke-file.txt')
   writeFileSync(fixture, 'hello 24H-OS\n')
   const fileRead = await runtime.request('GET', '/api/files/read?path=' + encodeURIComponent(fixture))
   check(
