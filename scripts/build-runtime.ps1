@@ -72,7 +72,15 @@ if (-not (Test-Path (Join-Path $Src "pyproject.toml"))) {
   if (-not (Test-Path $Tgz)) {
     $url = "https://codeload.github.com/NousResearch/hermes-agent/tar.gz/$Ref"
     Write-Host "==> 下载 $url"
-    Invoke-WebRequest -Uri $url -OutFile $Tgz -TimeoutSec 600
+    # 注意：Windows 自带的 curl.exe 走 schannel，若证书吊销列表（CRL/OCSP）不可达会报
+    # CRYPT_E_NO_REVOCATION_CHECK (0x80092012) —— 用 --ssl-no-revoke 跳过该检查。
+    if (Get-Command curl.exe -ErrorAction SilentlyContinue) {
+      & curl.exe --ssl-no-revoke -L -o $Tgz $url
+      if ($LASTEXITCODE -ne 0) { throw "下载失败（curl 退出码 $LASTEXITCODE）" }
+    } else {
+      [System.Net.ServicePointManager]::CheckCertificateRevocationList = $false
+      Invoke-WebRequest -Uri $url -OutFile $Tgz -TimeoutSec 600
+    }
   }
   Write-Host "==> 解压到 $Src"
   if (Test-Path $Src) { Remove-Item -Recurse -Force $Src }

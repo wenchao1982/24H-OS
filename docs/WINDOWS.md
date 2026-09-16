@@ -105,6 +105,8 @@ npm run dev
 | `tar` 不存在 | Win10 1803+ 自带 `tar.exe`；老系统需装 Git for Windows 后用 Git Bash 跑 `scripts/build-runtime.sh` |
 | pip 装依赖很慢/失败 | 默认走阿里云镜像；可加 `-Mirror https://pypi.tuna.tsinghua.edu.cn/simple/` |
 | `npm run smoke` 报错误码 5032 | 正常 —— 表示还没配模型；这一步只验证协议通路 |
+| `curl` 报 `CRYPT_E_NO_REVOCATION_CHECK (0x80092012)` | Windows 版 curl 走 schannel，CRL/OCSP 不可达时如此。加 `--ssl-no-revoke`（`build-runtime.ps1` 已内置） |
+| `npm : 无法加载文件 ... npm.ps1，因为在此系统上禁止运行脚本` | PowerShell 执行策略。`Set-ExecutionPolicy -Scope CurrentUser RemoteSigned -Force`，或改用 `npm.cmd` |
 | 杀软拦 node/python 子进程 | 首次运行时允许；企业管控环境把 `C:\dev\24H-OS` 与 `%APPDATA%\24H` 加白 |
 
 ---
