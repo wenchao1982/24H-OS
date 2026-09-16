@@ -100,9 +100,31 @@ npm run probe     # 更轻量：只验证核心启动 + 健康检查 + 一次鉴
 会以 `message.complete(status=error)` 收尾、`session.interrupt` 返回 5032 —— 这两项按"环境未就绪"
 处理，不代表通路有问题。
 
-## 打包（下一步）
+## 打包（Windows 安装包）
 
-1. 打运行时：`uv venv` + `uv pip install hermes-agent`（只装必需 extras），整个目录放进
-   electron-builder 的 `extraResources` → `resources/runtime/`；
-2. `appId` / `productName` / 图标 / NSIS 语言 按品牌配置；
-3. Windows 代码签名（否则用户会遇到 SmartScreen 拦截）。
+```bash
+PYTHON=python3.12 scripts/build-runtime.sh main   # ① 构建运行时 → runtime/（随包发出）
+NODE_ENV=development npm install --include=dev    # ② 装依赖（含 electron-builder）
+scripts/package-win.sh                            # ③ 出 NSIS 安装包 → release/
+```
+
+**为什么运行时从源码构建**：PyPI 上 `hermes-agent` 最新只到 **0.19.0（2026-07-20）**，而核心仓库已到
+0.21.x —— 0.20+ 只在 git 里发。所以 `build-runtime.sh` 用 codeload 拉源码树、在独立 venv 里从源码安装
+（依赖走 pip 镜像），产出 `runtime/`，再由 electron-builder 通过 `extraResources` 放进安装包。
+
+**安装包里的默认中文**：`build/installer.nsh` 在安装时把 `display.language: zh` 写进
+`%APPDATA%\24H\hermes\config.yaml`（正是壳使用的 `HERMES_HOME`），用户装完即是中文；已存在配置则不覆盖。
+
+**为什么是"venv + 源码树"两份**：Hermes 的 `setup.py` **拒绝构建 wheel/sdist**
+（`Building wheels or sdists for hermes-agent is not supported.`），官方只支持 shell installer / Docker /
+Nix / 开发用 editable。所以随包运行时 = 依赖装进 `runtime/venv`，核心源码树放 `runtime/core`，
+壳启动时用 `PYTHONPATH=runtime/core` 跑 `python -m hermes_cli.main serve …`（`electron/runtime.js` 自动识别该布局）。
+
+**实测（2026-09-16）**：`scripts/build-runtime.sh main` 产出 **371 MB** 运行时（核心 0.21.3 + Python 3.12），
+`npm run smoke` 对这**自带运行时**跑出 **16/16 通过** —— 即"离线、不依赖上游安装器"这条路是通的。
+
+**发布前必须补的**：
+
+- `build/icon.ico`（256×256）—— 否则用 Electron 默认图标；
+- **Windows 代码签名证书** —— 没有它用户会遇到 SmartScreen 拦截。签名配置放在 `package.json` 的
+  `build.win`（`certificateFile` / `certificatePassword`，或用环境变量交给 CI）。

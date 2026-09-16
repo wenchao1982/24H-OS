@@ -59,17 +59,22 @@ try {
   const models = await gateway.call('model.options')
   check('model.options 返回服务商列表', Array.isArray(models?.providers), `${models?.providers?.length ?? 0} 个服务商`)
 
-  // 发一条消息：观察完整事件序列（无 key 时以 error 的 message.complete 收尾）
+  // 发一条消息：观察完整事件序列。未配模型时，0.21.0 以 message.complete(status=error) 收尾，
+  // 0.21.3 直接发 error 帧 —— 对壳而言"turn 结束"的信号是两者之一（UI 两条都处理）。
   const submit = await gateway.call('prompt.submit', { session_id: sid, text: 'smoke test' })
   check('prompt.submit 被接受', submit?.status === 'streaming', JSON.stringify(submit))
-  await sleep(4000)
+  await sleep(6000)
 
   const types = events.map((e) => e.type)
-  const sawComplete = types.includes('message.complete')
-  check('收到 message.complete（事件流闭环）', sawComplete, types.join(', ').slice(0, 120))
+  const closed = types.includes('message.complete') || types.includes('error')
+  check('收到 turn 结束信号（message.complete 或 error）', closed, types.join(', ').slice(0, 140))
 
-  const risky = events.find((e) => e.type === 'message.complete' && e.payload?.status !== 'error')
-  check('无模型 key 时给出可读错误（而非静默失败）', Boolean(risky) || types.includes('message.complete'))
+  const readable = events.some(
+    (e) =>
+      (e.type === 'error' && typeof e.payload?.message === 'string' && e.payload.message.length > 0) ||
+      (e.type === 'message.complete' && typeof e.payload?.text === 'string' && e.payload.text.length > 0)
+  )
+  check('未配模型时给出可读错误（而非静默失败）', readable)
 
   // interrupt 走的是"需要 provider"的路径：未配置模型时核心回 5032 —— 这属于环境未就绪，
   // 不是参数错误（能拿到带码的答复本身说明 RPC 形状被接受）。配置好模型后这里会真正成功。

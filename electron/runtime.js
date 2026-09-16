@@ -28,32 +28,45 @@ const PY_RELPATH = IS_WIN ? path.join('Scripts', 'python.exe') : path.join('bin'
 
 /**
  * 找到能跑核心的 python。顺序（先具体后笼统）：
- *   1. HERMES_RUNTIME_PYTHON —— 开发时指向任意一份 Hermes 运行时/venv
- *   2. resourcesPath/runtime   —— 打包后随壳发行的运行时（见 README「运行时怎么带」）
- *   3. <repo>/runtime         —— 本地开发：把运行时放在仓库根的 runtime/
- *   4. PATH 里的 hermes        —— 用户机器上已装过 Hermes 的情况
+ *   1. HERMES_RUNTIME_PYTHON +（可选）HERMES_RUNTIME_CORE —— 开发时手动指定
+ *   2. resourcesPath/runtime 或 <repo>/runtime —— 随包运行时，两种布局都支持：
+ *        a. venv + core 源码树（scripts/build-runtime.sh 的产物）：runtime/venv/bin/python + runtime/core/
+ *        b. 单一 venv（已把 hermes 装进去）：runtime/bin/python
+ *   3. PATH 里的 hermes —— 用户机器上已装过 Hermes 的情况
  * @param {{resourcesPath?: string, appRoot?: string}} ctx
  */
 export function resolveRuntime(ctx = {}) {
   const explicit = process.env.HERMES_RUNTIME_PYTHON
-  if (explicit && existsSync(explicit)) return { kind: 'python', cmd: explicit }
+  if (explicit && existsSync(explicit)) {
+    const core = process.env.HERMES_RUNTIME_CORE
+    return { kind: 'python', cmd: explicit, coreDir: core && existsSync(core) ? core : undefined }
+  }
 
-  const roots = [ctx.resourcesPath && path.join(ctx.resourcesPath, 'runtime'), ctx.appRoot && path.join(ctx.appRoot, 'runtime')]
+  const roots = [
+    ctx.resourcesPath && path.join(ctx.resourcesPath, 'runtime'),
+    ctx.appRoot && path.join(ctx.appRoot, 'runtime')
+  ].filter(Boolean)
+
   for (const root of roots) {
-    if (!root) continue
+    // a) venv + 源码树布局
+    const venvPython = path.join(root, 'venv', PY_RELPATH)
+    const coreDir = path.join(root, 'core')
+    if (existsSync(venvPython) && existsSync(path.join(coreDir, 'hermes_cli'))) {
+      return { kind: 'bundled', cmd: venvPython, coreDir, root }
+    }
+    // b) 单一 venv 布局
     const candidate = path.join(root, PY_RELPATH)
     if (existsSync(candidate)) return { kind: 'python', cmd: candidate, root }
   }
 
-  // 兜底：用户机器上已有 hermes（或 hermes-agent）可执行文件
   return { kind: 'path', cmd: IS_WIN ? 'hermes.exe' : 'hermes' }
 }
 
-/** 把解析结果变成 argv（两种形态最终都跑 `serve`）。 */
+/** 把解析结果变成 argv（python 类运行时都走 `-m hermes_cli.main`，PATH 上的 hermes 直接跑）。 */
 export function buildArgs(runtime, { profile } = {}) {
   const serve = ['serve', '--host', '127.0.0.1', '--port', '0']
   const head = profile ? ['--profile', profile] : []
-  return runtime.kind === 'python' ? ['-m', 'hermes_cli.main', ...head, ...serve] : [...head, ...serve]
+  return runtime.kind === 'path' ? [...head, ...serve] : ['-m', 'hermes_cli.main', ...head, ...serve]
 }
 
 export class Runtime {
@@ -82,8 +95,14 @@ export class Runtime {
       if (this.opts.hermesHome) env.HERMES_HOME = this.opts.hermesHome
       // 让核心按行输出，便于解析就绪信号
       env.PYTHONUNBUFFERED = '1'
+      // 随包布局（venv + 源码树）：把源码树放进 PYTHONPATH，并以它为 cwd 启动
+      if (runtime.coreDir) env.PYTHONPATH = env.PYTHONPATH ? `${runtime.coreDir}${path.delimiter}${env.PYTHONPATH}` : runtime.coreDir
 
-      const child = spawn(runtime.cmd, args, { env, stdio: ['ignore', 'pipe', 'pipe'] })
+      const child = spawn(runtime.cmd, args, {
+        env,
+        cwd: runtime.coreDir ?? undefined,
+        stdio: ['ignore', 'pipe', 'pipe']
+      })
       this.child = child
 
       let settled = false

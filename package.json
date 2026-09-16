@@ -10,10 +10,44 @@
   "scripts": {
     "dev": "electron .",
     "probe": "node electron/runtime.js --probe",
-    "dist": "electron-builder --win nsis",
-    "smoke": "node scripts/smoke.mjs"
+    "smoke": "node scripts/smoke.mjs",
+    "runtime": "bash scripts/build-runtime.sh",
+    "pack:dir": "electron-builder --dir",
+    "dist": "electron-builder --win nsis"
   },
   "devDependencies": {
-    "electron": "40.10.2"
+    "electron": "40.10.2",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "com.wenchao.24hos",
+    "productName": "24H",
+    "executableName": "24H",
+    "artifactName": "24H-${version}-${arch}.${ext}",
+    "files": ["electron/**/*", "src/**/*", "package.json", "LICENSE", "NOTICE", "README.md"],
+    "extraResources": [
+      {
+        "from": "runtime",
+        "to": "runtime",
+        "filter": ["**/*"]
+      }
+    ],
+    "win": {
+      "target": ["nsis"],
+      "signAndEditExecutable": true
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "shortcutName": "24H",
+      "uninstallDisplayName": "24H",
+      "include": "build/installer.nsh",
+      "warningsAsErrors": false
+    },
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    }
   }
 }
