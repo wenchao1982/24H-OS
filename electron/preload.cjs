@@ -58,6 +58,10 @@ contextBridge.exposeInMainWorld('hermes', {
   openExternal: invoke('open:external'),
   pickDirectory: invoke('dialog:pickDir'),
 
+  // 壳自己的 UI 偏好（主题…），存在 userData 里
+  prefsGet: invoke('ui:prefs:get'),
+  prefsSet: invoke('ui:prefs:set'),
+
   // 事件流
   onReady: on('runtime:ready'),
   onRuntimeError: on('runtime:error'),

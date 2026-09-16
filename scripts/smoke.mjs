@@ -59,6 +59,10 @@ const check = (name, ok, detail = '') => {
   check('设置弹层有四个关闭入口（✕ / 关闭 / Esc / 点底色）', closers.length >= 3, `命中 ${closers.length} 个`)
   const lateReady = /onReady\([\s\S]{0,240}afterCoreReady/.test(rendererSrc)
   check('核心晚就绪也会补跑首屏加载', lateReady, lateReady ? 'onReady → afterCoreReady' : 'onReady 没接初始化：模型/会话列表会一直空着')
+  const iconCss = /\.entry\.dir \.ico::before/.test(cssSrc) && /\.entry\.file \.ico::before/.test(cssSrc)
+  check('文件图标用 CSS 画（不依赖 emoji 字体）', iconCss, iconCss ? '有 .entry.dir/.file 图标规则' : '缺 CSS 图标规则，会退回 emoji')
+  const richSrc = /function renderRich/.test(rendererSrc) && /\.md-table/.test(cssSrc)
+  check('助手回复走 Markdown 渲染', richSrc, richSrc ? 'renderRich + .md-* 样式齐' : '缺 renderRich 或 .md-* 样式：回复会显示裸 Markdown')
 }
 
 // 核心 home 隔离：这条链路会真的写配置（model.save_key 会覆盖 key、还会写自定义端点），

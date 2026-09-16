@@ -296,6 +296,14 @@ model 3   prompt 3   approval 3   voice 3   spawn_tree 3   process 3   …
 
 > 依据列里的"核心方法"指可直接调用的 gateway 方法/事件；"参照"指两个成熟产品里的对应实现。
 
+### F0 界面与设计系统（M1 交付出品，已完成）
+- **目标**：第一眼像"能卖的产品"，不是脚手架。
+- **依据**：上游 `apps/desktop/DESIGN.md`（token 化、单一原语、扁平不套盒、三态齐全、浮层才有阴影）；
+  Ekko Studio `packages/client/styles`（中性墨色、细分隔线、rd 8/6、字号 14 —— 克制而不花哨）。
+- **实现**：`src/styles.css` 单文件设计系统（颜色/字号/间距/圆角/阴影/层级全部 token 化，深色 + 浅色）；
+  助手回复 Markdown 渲染；文件图标 CSS 绘制；主题偏好存壳的 `userData/ui-prefs.json`。
+- **验收**：`npm run ui-smoke` 新增"主题能切""Markdown 渲染成真元素"两条断言（现 19/19）。
+
 ### F1 启动与就绪（M1，已完成 80%）
 - **目标**：装完打开就能用；核心慢启动时界面不"卡死"。
 - **依据**：核心 `serve` + READY 握手；上游 `backend-ready.ts`（合并输出的正则坑）、`hermes:boot-progress`；Studio 的运行时 `resolve→…→ready` 阶段。
@@ -312,7 +320,9 @@ model 3   prompt 3   approval 3   voice 3   spawn_tree 3   process 3   …
 - **依据**：`session.*` 30 个方法；核心规则"活跃会话不可删（4023）→ 先 close 再 delete"、"运行时回收后 4001 要 resume 恢复"（我们已内建）。
 - **待补**：会话导出/导入（`session.foreign.import/list/preview`）、会话分支（`session.branch`）、撤销（`session.undo`）、压缩（`session.compress`）——**核心已有，接 UI 即可**。
 
-### F4 模型与服务商（M2，已完成 80%）
+### F4 模型与服务商（M2，已完成 80%；**当前只对外提供 DeepSeek**）
+- **本版范围决定**：只暴露 DeepSeek（`PROVIDER_ALLOWLIST = ['deepseek']`，未命中时退回显示全部，避免界面死路）。
+  产品理由：一个模型 + 一个 key 是一条能讲清楚的首启路径；其余服务商走"高级 → 自定义端点"。
 - **依据**：上游 40 个 provider 插件目录；我们额外需要官方没有的国产服务商（此前调研结论：`ai302 / ark(火山方舟) / compshare / hunyuan / longcat / modelscope / qianfan / siliconflow` 这 8 个上游没有）。
 - **实现要点**：设置页已有"单选服务商 + key + 自定义 OpenAI 兼容端点"；补"连通性测试"（发一条 `ping`-级请求并显示延迟）、"多 key 轮换"（二期）。
 - **验收**：填 key → 保存 → 发消息成功（Windows 手工回归清单第 6 步）。
@@ -459,3 +469,6 @@ model 3   prompt 3   approval 3   voice 3   spawn_tree 3   process 3   …
   签名配置（`build.win.signtoolOptions`，证书走 `WIN_CSC_LINK`/`WIN_CSC_KEY_PASSWORD`）、
   打包自检（`scripts/after-pack.mjs` + `npm run verify:package`，已在本机 Linux 解包产物上验证）；
   核心契约"是否开放"已实测并单列 [`CORE-CONTRACT.md`](CORE-CONTRACT.md)。
+- 2026-09-16（第二次）：界面重做 —— token 化设计系统 + 深浅两色 + Markdown 渲染 + CSS 文件图标；
+  模型范围收窄为"只对外提供 DeepSeek"；主题偏好落到壳的 `userData/ui-prefs.json`（新增
+  `ui:prefs:get/set` 两个 IPC 通道）。ui-smoke 19/19、smoke 38/38。

@@ -4,6 +4,7 @@
  * 分工：主进程持有 python 子进程与 WebSocket，渲染进程只通过 IPC 调方法、收事件。
  */
 import { BrowserWindow, app, dialog, ipcMain, shell } from 'electron'
+import fs from 'node:fs'
 import path from 'node:path'
 import { Gateway } from './gateway.js'
 import { Runtime } from './runtime.js'
@@ -162,6 +163,29 @@ handle('fs:read', (payload) => runtime.request('GET', `/api/files/read?path=${en
 handle('sessions:search', (payload) =>
   runtime.request('GET', `/api/sessions/search?q=${encodeURIComponent(payload?.q ?? '')}`)
 )
+
+// ── 壳自己的 UI 偏好（主题等）────────────────────────────────────────────
+// 刻意不走核心配置：这是"壳长什么样"的偏好，跟 agent 的配置不是一回事（数据分层）。
+// 存在 userData/ui-prefs.json，渲染进程读不到磁盘，只通过这两个通道拿。
+const prefsFile = () => path.join(app.getPath('userData'), 'ui-prefs.json')
+function readPrefs() {
+  try {
+    return JSON.parse(fs.readFileSync(prefsFile(), 'utf8'))
+  } catch {
+    return {}
+  }
+}
+handle('ui:prefs:get', () => readPrefs())
+handle('ui:prefs:set', (patch) => {
+  const next = { ...readPrefs(), ...(patch && typeof patch === 'object' ? patch : {}) }
+  try {
+    fs.mkdirSync(path.dirname(prefsFile()), { recursive: true })
+    fs.writeFileSync(prefsFile(), JSON.stringify(next, null, 2) + '\n', 'utf8')
+  } catch (err) {
+    throw new Error(`写偏好失败：${err.message}`)
+  }
+  return next
+})
 
 handle('open:external', (url) => shell.openExternal(String(url)))
 

@@ -4,6 +4,26 @@
  */
 const $ = (id) => document.getElementById(id)
 const LIMIT = { MESSAGES: 400, LOGS: 300 }
+
+/** 当前版本只对外提供 DeepSeek：模型下拉与设置里的服务商都按这张白名单过滤。
+ *  如果核心这边一个都没匹配上（比如用户自己配了别的），就退回"显示全部"，免得界面变成死路。 */
+const PROVIDER_ALLOWLIST = ['deepseek']
+
+/** 主题：跟随系统 / 深色 / 浅色。刻意放在渲染层，壳不参与（换主题不需要重启核心）。 */
+const themeMedia = window.matchMedia('(prefers-color-scheme: light)')
+let themePref = 'system' // 由壳的 ui-prefs.json 提供，默认跟系统
+function applyTheme(pref) {
+  themePref = pref
+  const resolved = pref === 'system' ? (themeMedia.matches ? 'light' : 'dark') : pref
+  document.documentElement.dataset.theme = resolved
+  const label = pref === 'system' ? '跟随系统' : pref === 'dark' ? '深色' : '浅色'
+  const btn = $('btn-theme')
+  if (btn) btn.title = `外观：${label}（点一下切换）`
+}
+function persistTheme(pref) {
+  // 主题是"壳长什么样"的偏好，交给主进程写 userData/ui-prefs.json（不碰核心配置）
+  window.hermes.prefsSet({ theme: pref })
+}
 /** 壳期望的核心「桌面契约」版本（session.create 的 info.desktop_contract）。
  *  实测：0.21.0 → 6，0.21.3 → 7；随包运行时用的是 0.21.3，所以这里是 7。
  *  核心过旧/过新都会在顶部告警条提示，避免静默不兼容。 */
@@ -13,6 +33,7 @@ const state = {
   sessionId: null, // 当前活跃会话（核心给的短 id）
   sessions: [],
   providers: [],
+  providerNarrowed: false, // 是否被白名单收窄过（用于设置页那句说明）
   model: '',
   streaming: null, // { text, thinking, tools: Map }
   busy: false,
@@ -80,6 +101,126 @@ function el(tag, cls, text) {
 }
 
 /** 一条消息 = { role: 'user'|'assistant'|'error'|'info', text, thinking, tools: [] } */
+/* ───────────────────── 最小 Markdown 渲染 ─────────────────────
+   只用 document.createElement 拼 DOM（不用 innerHTML，也不在流式过程中反复重排）。
+   支持：围栏代码块、表格、有序/无序列表、标题、引用、粗体/斜体/行内代码/链接。
+   流式生成时先按纯文本走（快），一轮结束或读历史时再渲染成富文本。 */
+const MD_INLINE = /(\*\*[^*]+\*\*|`[^`]+`|\[[^\]]+\]\([^)]+\))/g
+
+function mdIsLink(url) {
+  return /^https?:\/\//i.test(url || '')
+}
+
+function mdInline(text) {
+  const frag = document.createDocumentFragment()
+  for (const part of String(text).split(MD_INLINE)) {
+    if (!part) continue
+    if (part.startsWith('**') && part.endsWith('**') && part.length > 4) {
+      frag.appendChild(el('strong', null, part.slice(2, -2)))
+    } else if (part.startsWith('`') && part.endsWith('`') && part.length > 2) {
+      frag.appendChild(el('code', 'md-code', part.slice(1, -1)))
+    } else if (/^\[/.test(part)) {
+      const m = part.match(/^\[([^\]]+)\]\(([^)]+)\)$/)
+      if (m && mdIsLink(m[2])) {
+        const a = el('a', 'md-link', m[1])
+        a.title = m[2]
+        a.addEventListener('click', () => window.hermes.openExternal(m[2]))
+        frag.appendChild(a)
+      } else {
+        frag.appendChild(document.createTextNode(part))
+      }
+    } else {
+      frag.appendChild(document.createTextNode(part))
+    }
+  }
+  return frag
+}
+
+function renderRich(node, text) {
+  const src = String(text ?? '')
+  node.textContent = ''
+  if (!src) return
+  // 没有 Markdown 特征就走纯文本（省掉整条解析路径）
+  if (!/[`*_|#\[\]>\n]/.test(src)) {
+    node.textContent = src
+    return
+  }
+  const lines = src.split('\n')
+  let i = 0
+  while (i < lines.length) {
+    const line = lines[i]
+    if (/^\s*```/.test(line)) {
+      const body = []
+      i++
+      while (i < lines.length && !/^\s*```/.test(lines[i])) body.push(lines[i++])
+      i++
+      const pre = el('pre', 'md-fence')
+      pre.appendChild(el('code', null, body.join('\n')))
+      node.appendChild(pre)
+      continue
+    }
+    if (/\|/.test(line) && /^\s*\|?[\s:|-]*-[\s:|-]*\|?\s*$/.test(lines[i + 1] ?? '') && /-/.test(lines[i + 1] ?? '')) {
+      const head = line.split('|').map((c) => c.trim()).filter((c, idx, arr) => !(c === '' && (idx === 0 || idx === arr.length - 1)))
+      i += 2
+      const rows = []
+      while (i < lines.length && /\|/.test(lines[i])) {
+        rows.push(lines[i].split('|').map((c) => c.trim()).filter((c, idx, arr) => !(c === '' && (idx === 0 || idx === arr.length - 1))))
+        i++
+      }
+      const table = el('table', 'md-table')
+      const thead = el('thead')
+      const htr = el('tr')
+      for (const cell of head) htr.appendChild(el('th', null, cell))
+      thead.appendChild(htr)
+      table.appendChild(thead)
+      const tbody = el('tbody')
+      for (const row of rows) {
+        const tr = el('tr')
+        for (const cell of row) tr.appendChild(el('td', null, cell))
+        tbody.appendChild(tr)
+      }
+      table.appendChild(tbody)
+      node.appendChild(table)
+      continue
+    }
+    const ul = line.match(/^\s*[-*]\s+(.*)$/)
+    const ol = line.match(/^\s*\d+\.\s+(.*)$/)
+    if (ul || ol) {
+      const list = el(ol ? 'ol' : 'ul', 'md-list')
+      const re = ol ? /^\s*\d+\.\s+(.*)$/ : /^\s*[-*]\s+(.*)$/
+      while (i < lines.length && re.test(lines[i])) {
+        list.appendChild(el('li', null, lines[i].replace(re, '$1')))
+        i++
+      }
+      node.appendChild(list)
+      continue
+    }
+    const h = line.match(/^(#{1,4})\s+(.*)$/)
+    if (h) {
+      node.appendChild(el('div', `md-h md-h${h[1].length}`, h[2]))
+      i++
+      continue
+    }
+    if (/^\s*>\s?/.test(line)) {
+      const quote = el('blockquote', 'md-quote')
+      const body = []
+      while (i < lines.length && /^\s*>\s?/.test(lines[i])) body.push(lines[i++].replace(/^\s*>\s?/, ''))
+      quote.appendChild(mdInline(body.join('\n')))
+      node.appendChild(quote)
+      continue
+    }
+    if (!line.trim()) {
+      i++
+      continue
+    }
+    const para = []
+    while (i < lines.length && lines[i].trim() && !/^\s*(```|#{1,4}\s|[-*]\s|\d+\.\s|>)/.test(lines[i])) para.push(lines[i++])
+    const p = el('div', 'md-p')
+    p.appendChild(mdInline(para.join('\n')))
+    node.appendChild(p)
+  }
+}
+
 function renderMessage(msg, { append = true } = {}) {
   const wrap = el('div', `msg ${msg.role}`)
   wrap.dataset.role = msg.role
@@ -93,8 +234,9 @@ function renderMessage(msg, { append = true } = {}) {
     wrap.appendChild(th)
   }
 
-  const bubble = el('div', 'bubble', msg.text ?? '')
+  const bubble = el('div', 'bubble')
   bubble.dataset.role = 'text'
+  renderRich(bubble, msg.text ?? '')
   wrap.appendChild(bubble)
 
   for (const tool of msg.tools ?? []) wrap.appendChild(renderTool(tool))
@@ -159,7 +301,9 @@ function renderSessions() {
     acts.appendChild(del)
     line.appendChild(acts)
     row.appendChild(line)
-    row.appendChild(el('div', 'm', `${s.message_count ?? 0} 条 · ${s.id}`))
+    const meta = el('div', 'm', `${s.message_count ?? 0} 条消息`)
+    meta.title = s.id
+    row.appendChild(meta)
     row.addEventListener('click', () => activateSession(s.id))
     box.appendChild(row)
   }
@@ -245,6 +389,12 @@ function renderProviderSelect() {
     sel.appendChild(new Option(`${p.name || p.slug}${p.is_current ? '（当前）' : ''}`, p.slug))
   }
   if (!state.providers.length) sel.appendChild(new Option('（未读到服务商）', ''))
+  const hint = $('provider-hint')
+  if (hint) {
+    hint.textContent = state.providerNarrowed
+      ? '当前版本只对外提供 DeepSeek：这里只列 DeepSeek。核心支持的其它服务商在「高级」里可以按自定义端点接入。'
+      : '从核心读取的可用服务商；带「当前」标记的是正在使用的。'
+  }
 }
 
 function renderRunInfo(info) {
@@ -294,7 +444,11 @@ async function refreshModels() {
     $('model-select').appendChild(new Option(`模型读取失败：${res.error}`, ''))
     return
   }
-  state.providers = res.data?.providers ?? []
+  const all = res.data?.providers ?? []
+  const allowed = all.filter((p) => PROVIDER_ALLOWLIST.includes(p.slug))
+  // 白名单命中就用白名单；一个都没命中（用户自己配了别的）就显示全部，避免界面变成死路
+  state.providers = allowed.length ? allowed : all
+  state.providerNarrowed = allowed.length > 0 && allowed.length < all.length
   renderModelSelect()
   renderProviderSelect()
 }
@@ -410,6 +564,8 @@ function finishStream() {
   if (s) {
     const textEl = s.node.querySelector('.bubble[data-role="text"]')
     textEl?.classList.remove('cursor')
+    // 生成过程中是纯文本（每次 delta 都重排太浪费），一轮结束再渲染成富文本
+    if (textEl && s.msg.text) renderRich(textEl, s.msg.text)
     if (!s.msg.text) s.node.remove()
   }
   state.streaming = null
@@ -526,15 +682,22 @@ const filesUI = { path: '', entries: [] }
 function renderEntries() {
   const box = $('entries')
   box.textContent = ''
-  $('files-path').textContent = filesUI.path || '—'
+  // 路径栏很窄：显示尾部两段（完整路径放 tooltip），比截断后半段有用
+  const full = filesUI.path || '—'
+  const parts = full.split(/[\\/]/).filter(Boolean)
+  const short = parts.length > 2 ? '…/' + parts.slice(-2).join('/') : full
+  const pathEl = $('files-path')
+  pathEl.textContent = short
+  pathEl.title = full
   if (!filesUI.entries.length) {
     box.appendChild(el('div', 'empty', '空目录'))
     return
   }
   for (const e of filesUI.entries) {
-    const row = el('div', 'entry')
-    row.appendChild(el('span', 'ico', e.isDirectory ? '📁' : '📄'))
+    const row = el('div', 'entry ' + (e.isDirectory ? 'dir' : 'file'))
+    row.appendChild(el('span', 'ico')) // 图形由 CSS 画，见 styles.css 的 .entry .ico
     row.appendChild(el('span', null, e.name))
+    row.title = e.path
     row.addEventListener('click', () => (e.isDirectory ? openDir(e.path) : openFile(e.path)))
     box.appendChild(row)
   }
@@ -760,6 +923,15 @@ function openSettings() {
   $('settings').hidden = false
   loadSettingsForm()
 }
+$('btn-theme').addEventListener('click', () => {
+  const next = (document.documentElement.dataset.theme || 'dark') === 'dark' ? 'light' : 'dark'
+  applyTheme(next)
+  persistTheme(next)
+})
+themeMedia.addEventListener('change', () => {
+  if (themePref === 'system') applyTheme('system') // 只有"跟随系统"时才跟着系统变
+})
+
 $('btn-settings').addEventListener('click', openSettings)
 $('btn-close-settings').addEventListener('click', closeSettings)
 $('btn-close-settings-x').addEventListener('click', closeSettings)
@@ -840,6 +1012,17 @@ async function afterCoreReady() {
   if (state.sessions.length) await activateSession(state.sessions[0].id)
   else await newSession()
 }
+
+// 启动第一件事：问壳要主题偏好（默认深色，读完再按偏好切，避免白闪）
+async function initTheme() {
+  try {
+    const res = await window.hermes.prefsGet()
+    applyTheme(res?.data?.theme || 'system')
+  } catch {
+    applyTheme('system')
+  }
+}
+initTheme()
 
 async function boot() {
   // IPC 返回的是 {ok,data}：不拆开的话 s.phase 恒为 undefined，

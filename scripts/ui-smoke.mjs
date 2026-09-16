@@ -63,7 +63,16 @@ const RESP = {
   modelsList: { providers: [{ slug: 'deepseek', name: 'DeepSeek', models: ['deepseek-chat', 'deepseek-reasoner'], is_current: true }] },
   sessionsList: { sessions: [{ id: 's1', title: '冒烟会话', message_count: 2 }] },
   sessionsCreate: { session_id: 's-new', info: { model: 'deepseek-chat' } },
-  sessionHistory: { count: 0, messages: [] },
+  sessionHistory: {
+    count: 2,
+    messages: [
+      { role: 'user', content: '把关键数字整理成表格' },
+      {
+        role: 'assistant',
+        content: '好的：\n\n| 项目 | Q2 | Q3 |\n| --- | --- | --- |\n| 营收 | 1.24 亿 | 1.51 亿 |\n\n脚本如下：\n\n```python\nprint("ok")\n```\n\n已导出 `exports/Q3.xlsx`，营收 **1.51 亿**。'
+      }
+    ]
+  },
   configGet: { model: 'deepseek-chat' },
   customEndpoints: []
 }
@@ -119,6 +128,30 @@ const modelOpts = await page.$$eval('#model-select option', (o) => o.map((x) => 
 check('模型下拉框里有服务商模型（不再是「读取中…」）', modelOpts.some((t) => t.includes('deepseek-chat')), modelOpts.join(' | '))
 const sessRows = await page.$$eval('#sessions > *', (n) => n.length)
 check('会话列表渲染出 1 条', sessRows === 1, `行数=${sessRows}`)
+
+// 界面外观（协议层测不出来，但用户第一眼就是它）
+const themeBefore = await page.evaluate(() => {
+  document.documentElement.dataset.theme = 'dark'
+  return document.documentElement.dataset.theme
+})
+await page.evaluate(() => document.getElementById('btn-theme').click())
+await wait(150)
+const themeAfter = await page.evaluate(() => document.documentElement.dataset.theme)
+check('点「外观」能真的切主题', themeBefore === 'dark' && themeAfter === 'light', `${themeBefore} → ${themeAfter}`)
+await page.evaluate(() => document.getElementById('btn-theme').click())
+await wait(100)
+
+const md = await page.evaluate(() => ({
+  table: document.querySelectorAll('.bubble .md-table td').length,
+  fence: document.querySelectorAll('.bubble .md-fence code').length,
+  code: document.querySelectorAll('.bubble .md-code').length,
+  strong: document.querySelectorAll('.bubble strong').length
+}))
+check(
+  '助手回复的 Markdown 渲染成真元素（表格/代码块/行内码/粗体）',
+  md.table > 0 && md.fence > 0 && md.code > 0 && md.strong > 0,
+  JSON.stringify(md)
+)
 
 // IPC 返回值是 {ok,data}，忘了拆包就会显示 undefined（曾把「核心就绪」判成没就绪）
 const header = await page.$eval('#core-state', (el) => el.textContent)
