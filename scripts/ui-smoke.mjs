@@ -43,14 +43,18 @@ try {
 let pageDir = path.join(REPO, 'src')
 if (BEFORE) {
   // 从 git HEAD 取出修复前的 src/（用户机器上就是这份）
-  const dir = '/tmp/guitest/before-src'
+  const dir = path.join(os.tmpdir(), '24h-ui-smoke-before')
   fs.rmSync(dir, { recursive: true, force: true })
-  fs.mkdirSync(dir, { recursive: true })
+  fs.mkdirSync(dir, { recursive: true }) // 每次用干净副本，避免上一轮残留
   for (const f of ['index.html', 'styles.css', 'renderer.js']) {
     fs.writeFileSync(path.join(dir, f), execFileSync('git', ['-C', REPO, 'show', `HEAD:src/${f}`]))
   }
   pageDir = dir
 }
+
+// 截图是可选的：只有设了 SHOTS_DIR 才拍（CI 上不需要，也不该因为目录不存在而失败）
+const SHOTS_DIR = process.env.SHOTS_DIR || null
+if (SHOTS_DIR) fs.mkdirSync(SHOTS_DIR, { recursive: true })
 
 const results = []
 const check = (name, ok, detail = '') => {
@@ -137,6 +141,9 @@ await page.evaluateOnNewDocument((RESP) => {
   })
 }, RESP)
 
+const shot = (pg, name) =>
+  SHOTS_DIR ? pg.screenshot({ path: path.join(SHOTS_DIR, name) }) : Promise.resolve()
+
 const display = (id) => page.$eval(id, (el) => getComputedStyle(el).display)
 const wait = (ms) => new Promise((r) => setTimeout(r, ms))
 
@@ -149,9 +156,9 @@ check('启动时右侧面板是隐藏的', (await display('#panel')) === 'none',
 check('启动时告警条是隐藏的', (await display('#banner')) === 'none', `display=${await display('#banner')}`)
 
 if (!BEFORE) {
-  await page.screenshot({ path: '/tmp/guitest/after-boot.png' })
+  await shot(page, 'after-boot.png')
 } else {
-  await page.screenshot({ path: '/tmp/guitest/before-boot.png' })
+  await shot(page, 'before-boot.png')
 }
 
 // 核心晚就绪：模拟 runtime ready 事件（用户的窗口通常比核心先出现）
@@ -331,7 +338,7 @@ const provOpts = await page.$$eval('#set-provider option', (o) => o.map((x) => x
 check('设置里服务商下拉框有内容且只列可填 Key 的', provOpts.length === 1 && provOpts[0].includes('DeepSeek'), provOpts.join(' | '))
 const provVals = await page.$$eval('#set-provider option', (o) => o.map((x) => x.value))
 check('虚拟/内置服务商（moa、opencode-free）不出现在可填 Key 的列表里', !provVals.includes('moa') && !provVals.includes('opencode-free'), provVals.join(' | '))
-await page.screenshot({ path: '/tmp/guitest/settings-open.png' })
+await shot(page, 'settings-open.png')
 
 await page.click('#btn-close-settings-x')
 await wait(150)
