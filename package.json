@@ -13,7 +13,8 @@
     "smoke": "node scripts/smoke.mjs",
     "runtime": "bash scripts/build-runtime.sh",
     "pack:dir": "electron-builder --dir",
-    "dist": "electron-builder --win nsis"
+    "dist": "electron-builder --win nsis",
+    "runtime:win": "powershell -ExecutionPolicy Bypass -File scripts/build-runtime.ps1"
   },
   "devDependencies": {
     "electron": "40.10.2",
@@ -24,16 +25,27 @@
     "productName": "24H",
     "executableName": "24H",
     "artifactName": "24H-${version}-${arch}.${ext}",
-    "files": ["electron/**/*", "src/**/*", "package.json", "LICENSE", "NOTICE", "README.md"],
+    "files": [
+      "electron/**/*",
+      "src/**/*",
+      "package.json",
+      "LICENSE",
+      "NOTICE",
+      "README.md"
+    ],
     "extraResources": [
       {
         "from": "runtime",
         "to": "runtime",
-        "filter": ["**/*"]
+        "filter": [
+          "**/*"
+        ]
       }
     ],
     "win": {
-      "target": ["nsis"],
+      "target": [
+        "nsis"
+      ],
       "signAndEditExecutable": true
     },
     "nsis": {

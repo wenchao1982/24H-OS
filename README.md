@@ -34,6 +34,8 @@ scripts/smoke.mjs     无界面冒烟测试（协议层端到端）
 
 ## 开发
 
+> **Windows 用户看这里 → [`docs/WINDOWS.md`](docs/WINDOWS.md)**：装环境、跑起来、出安装包的完整步骤与卡点。
+
 ```bash
 npm install          # 国内网络可加：ELECTRON_MIRROR=https://registry.npmmirror.com/-/binary/electron/
 npm run probe        # 不需要图形环境：验证"启动核心 → 拿到端口 → 健康检查 → 鉴权调用"整条链路
