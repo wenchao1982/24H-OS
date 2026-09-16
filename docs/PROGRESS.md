@@ -55,11 +55,11 @@
 | 3 | 图标：`build/icon.png` 母版 + `build/icon.ico`（7 尺寸） | 我 | ✅ `npm run icons` |
 | 4 | 签名配置（`build.win.signtoolOptions`，证书走环境变量） | 我 | ✅ 配置就位 |
 | 5 | 打包自检（`afterPack` 钩子 + `npm run verify:package`） | 我 | ✅ 本机 Linux 解包产物实测 |
-| 6 | **签名证书**（OV 证书或 Azure Trusted Signing） | **你（要买）** | ⬜ 阻塞第 9、10 项 |
+| 6 | **签名证书**（OV 证书或 Azure Trusted Signing） | 你 | 🟡 **内测阶段暂缓**（2026-09-16 决定：先不买，出未签名包给内测用户，用户点「更多信息 - 仍要运行」即可；正式对外发布前再办） |
 | 7 | `build-runtime.ps1` 在 Windows 上首次跑通 | **你（机器）** | ⬜ 阻塞 8–10 |
 | 8 | Windows：`npm run smoke` 38/38 | **你（机器）** | ⬜ |
 | 9 | Windows：`npm run dev` 界面可用（设置开关 / 填 DeepSeek key / 发消息） | **你（机器）** | ⬜ |
-| 10 | Windows：`npm run dist` 出 NSIS + 验证签名 + 装包首启验收 | **你（机器）** | ⬜ 需第 6、7 项 |
+| 10 | Windows：`npm run dist` 出 NSIS（内测不签名）+ `npm run verify:package` + 装包首启验收 | **你（机器）** | ⬜ 只需第 7 项（运行时构建） |
 
 ## 4. 排期（按日，遇阻顺延）
 
@@ -84,6 +84,11 @@
 | 上游核心升级（0.21.x → 更高） | 我 | 契约版本会变（`desktop_contract` 已是 6→7），升级后要跑全量冒烟 |
 
 ## 6. 变更记录
+
+- 2026-09-16（第四次）：用户决定**暂不买签名证书，先进内测**。
+  同时修掉用户截图里暴露的一个界面 bug：设置弹层最后一个分节的内容被底部「完成」栏裁掉半个字
+  （根因：`.settings-body` 的网格隐式行是 `auto`，内容一高就顶破容器；改成 `grid-template-rows: minmax(0, 1fr)`）。
+  已加 ui-smoke 几何断言：「底部完成栏必须在滚动区之下、卡片之内」，并在 780px 矮窗口下复现验证通过。
 
 - 2026-09-16（第三次，自主推进）：
   - **菜单改版三步全部落地**：① 设置分五节 + 会话行原生「⋯」菜单 + 右侧面板（文件/预览/日志）合流；

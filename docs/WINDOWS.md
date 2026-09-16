@@ -172,6 +172,10 @@ node .\node_modules\electron\install.js
 
 ## 三、出安装包（要发给用户时）
 
+> **内测阶段（未签名）**：先不买证书也能出包 —— `npm run dist` 会产出未签名的 NSIS 安装包。
+> 内测用户首次运行会看到 SmartScreen 拦截（「未知发布者」），点 **更多信息 → 仍要运行** 即可；
+> 360/腾讯管家也可能提示。对外正式发布前再办证书（见下面 3.2）。
+
 ```powershell
 # 前提：第二步的 runtime\ 已构建好（安装包会把它一起打包进去）
 npm run dist            # = electron-builder --win nsis → release\24H-0.1.0-x64.exe
