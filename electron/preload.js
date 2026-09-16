@@ -26,6 +26,8 @@ contextBridge.exposeInMainWorld('hermes', {
   sessionResume: invoke('session:resume'),
   sessionHistory: invoke('session:history'),
   sessionInterrupt: invoke('session:interrupt'),
+  sessionCwdSet: invoke('session:cwdSet'),
+  sessionStatus: invoke('session:status'),
   sessionTitle: invoke('session:title'),
   send: invoke('chat:send'),
 
@@ -38,6 +40,7 @@ contextBridge.exposeInMainWorld('hermes', {
   capabilities: invoke('gateway:capabilities'),
 
   openExternal: invoke('open:external'),
+  pickDirectory: invoke('dialog:pickDir'),
 
   // 事件流
   onReady: on('runtime:ready'),

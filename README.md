@@ -87,7 +87,11 @@ HERMES_RUNTIME_PYTHON=/path/to/hermes/venv/bin/python npm run probe
 - **4001 `session not found`** —— 运行时不持有该会话（WS 断开后被回收/LRU 驱逐）。客户端应拿
   **stored session id**（`session.list` 里的 `id`）走 `session.resume` 取回新的运行时 `session_id`，
   再重试原调用。`electron/main.js` 的 `gwCall` 已内建这个恢复动作。
-- **5032 `No inference provider configured`** —— 还没配模型/key。UI 要把它翻译成人话并引导去设置页。
+- **5032 `No inference provider configured`** —— 还没配模型/key。UI 把它翻译成人话并引导去设置页。
+
+**桌面契约版本**：`session.create` 的 `info.desktop_contract` 是核心给壳的协议版本号
+（实测 **0.21.0 → 6，0.21.3 → 7**）。壳把它与编译期期望值比对，过旧/过新都会弹顶部告警条 ——
+这样"换了别的版本核心"不会变成静默不兼容。
 
 ## 自检
 

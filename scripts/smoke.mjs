@@ -50,6 +50,21 @@ try {
   const sid = created?.session_id
   check('session.create 返回 session_id', Boolean(sid), `sid=${sid} model=${created?.info?.model}`)
 
+  // 壳的兼容性检查依赖这个字段：session.create 的 info.desktop_contract（实测 0.21.x = 6）
+  check(
+    'session.create 带 desktop_contract（壳据此做版本对齐）',
+    typeof created?.info?.desktop_contract === 'number',
+    `desktop_contract=${created?.info?.desktop_contract}`
+  )
+
+  // 工作目录：壳的「工作目录」按钮走 session.cwd.set
+  const cwdTarget = '/tmp'
+  const cwdRes = await gateway
+    .call('session.cwd.set', { session_id: sid, cwd: cwdTarget })
+    .then((r) => ({ ok: true, cwd: r?.info?.cwd ?? r?.cwd }))
+    .catch((e) => ({ ok: false, code: e.code, message: e.message }))
+  check('session.cwd.set 设置工作目录', cwdRes.ok, cwdRes.ok ? `cwd=${cwdRes.cwd ?? cwdTarget}` : `code=${cwdRes.code}`)
+
   const list = await gateway.call('session.list', {})
   check('session.list', Array.isArray(list?.sessions), `${list?.sessions?.length ?? 0} 个会话`)
 

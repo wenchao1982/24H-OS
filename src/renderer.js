@@ -4,6 +4,10 @@
  */
 const $ = (id) => document.getElementById(id)
 const LIMIT = { MESSAGES: 400, LOGS: 300 }
+/** 壳期望的核心「桌面契约」版本（session.create 的 info.desktop_contract）。
+ *  实测：0.21.0 → 6，0.21.3 → 7；随包运行时用的是 0.21.3，所以这里是 7。
+ *  核心过旧/过新都会在顶部告警条提示，避免静默不兼容。 */
+const EXPECTED_DESKTOP_CONTRACT = 7
 
 const state = {
   sessionId: null, // 当前活跃会话（核心给的短 id）
@@ -12,7 +16,52 @@ const state = {
   model: '',
   streaming: null, // { text, thinking, tools: Map }
   busy: false,
-  tokens: 0
+  tokens: 0,
+  cwd: '',
+  contract: null,
+  providerReady: null
+}
+
+/* ───────────────────── 顶部告警条（兼容性 / 未配置模型）───────────────────── */
+
+function showBanner(text, { error = false, action } = {}) {
+  const box = $('banner')
+  box.textContent = ''
+  box.hidden = false
+  box.className = 'banner' + (error ? ' err' : '')
+  box.appendChild(el('span', null, text))
+  if (action) {
+    const btn = el('button', null, action.label)
+    btn.addEventListener('click', action.onClick)
+    box.appendChild(btn)
+  }
+}
+
+function hideBanner() {
+  $('banner').hidden = true
+}
+
+/** 核心契约版本对齐检查：壳编译期期望的版本 vs 运行时实际给的值 */
+function checkContract(info) {
+  const actual = info?.desktop_contract ?? null
+  state.contract = actual
+  if (actual == null) return
+  if (actual < EXPECTED_DESKTOP_CONTRACT) {
+    showBanner(`核心过旧：桌面契约 ${actual} < 期望 ${EXPECTED_DESKTOP_CONTRACT}。请更新运行时（scripts/build-runtime.sh）。`, { error: true })
+  } else if (actual > EXPECTED_DESKTOP_CONTRACT) {
+    showBanner(`核心较新：桌面契约 ${actual} > 壳支持的 ${EXPECTED_DESKTOP_CONTRACT}。壳可能不兼容，建议同步升级壳。`)
+  }
+}
+
+/** 把核心的错误码翻译成人话，并给下一步动作 */
+function explainError(message, code) {
+  if (code === 5032 || /No inference provider/i.test(message || '')) {
+    showBanner('还没有配置模型：请到「设置」填入服务商 API Key，或切换一个可用模型。', {
+      action: { label: '去设置', onClick: () => $('btn-settings').click() }
+    })
+    return '还没配置模型 —— 点右上角「设置」填入 API Key 后重试。'
+  }
+  return message
 }
 
 /* ───────────────────────── 渲染：消息 ───────────────────────── */
@@ -137,6 +186,25 @@ function renderRunInfo(info) {
 
 /* ───────────────────────── 交互逻辑 ───────────────────────── */
 
+function paintCwd(cwd) {
+  if (cwd) state.cwd = cwd
+  const label = state.cwd ? state.cwd.replace(/^.*[\\/]/, '') || state.cwd : '工作目录'
+  $('cwd-label').textContent = label
+  $('btn-cwd').title = state.cwd || '选择工作目录'
+}
+
+async function pickCwd() {
+  const dir = await window.hermes.pickDirectory()
+  if (!dir) return
+  const res = await window.hermes.sessionCwdSet({ session_id: state.sessionId, cwd: dir })
+  if (!res.ok) {
+    showBanner(`设置工作目录失败：${res.error}`, { error: true })
+    return
+  }
+  paintCwd(dir)
+  hideBanner()
+}
+
 async function refreshSessions() {
   const res = await window.hermes.sessionsList({})
   if (!res.ok) return
@@ -164,6 +232,8 @@ async function newSession() {
   }
   state.sessionId = res.data?.session_id ?? null
   state.model = res.data?.info?.model || state.model
+  checkContract(res.data?.info)
+  paintCwd(res.data?.info?.cwd)
   clearThread()
   emptyHint('开始对话吧')
   await refreshSessions()
@@ -178,6 +248,8 @@ async function activateSession(id) {
     return
   }
   state.sessionId = res.data?.session_id ?? id
+  checkContract(res.data?.info)
+  paintCwd(res.data?.info?.cwd)
   await loadHistory(id)
   renderSessions()
 }
@@ -345,13 +417,23 @@ function onGatewayEvent(evt) {
       }
       break
     case 'error':
-      pushStreamError(payload?.message ?? '未知错误')
+      pushStreamError(explainError(payload?.message ?? '未知错误', payload?.code))
       finishStream()
       break
     case 'session.info':
       if (payload?.model) {
         state.model = payload.model
         $('session-label').textContent = `${payload.provider || ''} ${payload.model}`.trim()
+      }
+      break
+    case 'setup.ready':
+      state.providerReady = payload?.provider_configured ?? null
+      if (payload?.provider_configured === false) {
+        showBanner('首次启动：还没有配置任何模型服务商。到「设置」填入 API Key 就能开始对话。', {
+          action: { label: '去设置', onClick: () => $('btn-settings').click() }
+        })
+      } else if (payload?.provider_configured === true) {
+        hideBanner()
       }
       break
     case 'sessions.changed':
@@ -448,6 +530,7 @@ $('btn-stop').addEventListener('click', async () => {
 $('btn-logs').addEventListener('click', () => {
   drawer.hidden = !drawer.hidden
 })
+$('btn-cwd').addEventListener('click', pickCwd)
 $('btn-settings').addEventListener('click', async () => {
   $('settings').hidden = false
   await loadSettingsForm()
@@ -501,6 +584,7 @@ async function boot() {
   }
   await refreshModels()
   await refreshSessions()
+  paintCwd('')
   if (state.sessions.length) await activateSession(state.sessions[0].id)
   else await newSession()
   refreshRunInfo()

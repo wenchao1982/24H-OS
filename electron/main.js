@@ -3,7 +3,7 @@
  *
  * 分工：主进程持有 python 子进程与 WebSocket，渲染进程只通过 IPC 调方法、收事件。
  */
-import { BrowserWindow, app, ipcMain, shell } from 'electron'
+import { BrowserWindow, app, dialog, ipcMain, shell } from 'electron'
 import path from 'node:path'
 import { Gateway } from './gateway.js'
 import { Runtime } from './runtime.js'
@@ -135,6 +135,8 @@ handle('session:activate', gwCall('session.activate'))
 handle('session:resume', gwCall('session.resume'))
 handle('session:history', gwCall('session.history'))
 handle('session:interrupt', gwCall('session.interrupt'))
+handle('session:cwdSet', gwCall('session.cwd.set'))
+handle('session:status', gwCall('session.status'))
 handle('session:title', gwCall('session.title'))
 handle('chat:send', gwCall('prompt.submit'))
 handle('models:list', gwCall('model.options'))
@@ -146,6 +148,12 @@ handle('config:set', (payload) => runtime.request('PUT', '/api/config', payload?
 handle('gateway:capabilities', gwCall('gateway.capabilities'))
 
 handle('open:external', (url) => shell.openExternal(String(url)))
+
+// 原生目录选择（会话的工作目录）
+handle('dialog:pickDir', async () => {
+  const res = await dialog.showOpenDialog(win, { properties: ['openDirectory', 'createDirectory'] })
+  return res.canceled ? null : res.filePaths[0]
+})
 
 app.whenReady().then(async () => {
   createWindow()

@@ -108,3 +108,11 @@ aside .side-head button { flex: 1; }
 .empty { color: var(--dim); text-align: center; padding: 40px 0; }
 .kv { display: flex; justify-content: space-between; gap: 10px; padding: 4px 0; border-bottom: 1px dashed var(--line-soft); font-size: 12px; }
 .kv b { color: var(--dim); font-weight: 400; }
+
+/* 顶部告警条（核心版本不匹配 / 未配置模型） */
+.banner {
+  padding: 8px 16px; font-size: 12.5px; border-bottom: 1px solid var(--line);
+  background: #2a2312; color: #f0d58c; display: flex; gap: 10px; align-items: center;
+}
+.banner.err { background: #2a1513; color: #ffb4ae; border-bottom-color: #5a2320; }
+.banner button { padding: 3px 9px; font-size: 12px; }
