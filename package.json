@@ -1,0 +1,18 @@
+{
+  "name": "24h-os",
+  "productName": "24H",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "24H-OS — Electron desktop shell over the Hermes Agent runtime",
+  "main": "electron/main.js",
+  "license": "SEE LICENSE IN LICENSE",
+  "scripts": {
+    "dev": "electron .",
+    "probe": "node electron/runtime.js --probe",
+    "dist": "electron-builder --win nsis"
+  },
+  "devDependencies": {
+    "electron": "40.10.2"
+  }
+}

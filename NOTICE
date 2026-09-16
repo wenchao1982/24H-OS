@@ -1,0 +1,29 @@
+24H-OS
+Copyright (c) 2026 wenchao1982
+Licensed under the Business Source License 1.1 — see LICENSE.
+（Licensor 可按需提供商业授权）
+
+--------------------------------------------------------------------------
+运行时依赖 / Runtime dependency
+--------------------------------------------------------------------------
+
+本产品在**运行时**调用 Hermes Agent 作为后端核心，以独立进程方式启动：
+
+    <hermes 运行时 python> -m hermes_cli.main serve --host 127.0.0.1 --port 0
+
+Hermes Agent — https://github.com/NousResearch/hermes-agent
+License: MIT
+Copyright (c) 2025 Nous Research
+
+本仓库**不包含** Hermes Agent 的源代码副本；若发行包中随附了运行时（把
+Hermes Agent 及其依赖打包进安装包），发行时应同时随附其 MIT 许可原文与版权声明。
+
+--------------------------------------------------------------------------
+第三方组件 / Third-party components
+--------------------------------------------------------------------------
+
+- Electron / Chromium：MIT / BSD 及若干其他许可，归属声明随发行安装包附带
+  （electron-builder 生成的 NOTICE/许可文件）。
+- 随附运行时中 Hermes Agent 的间接依赖：见其各自的许可文件。
+
+如发行包还包含其它第三方代码，请在此处补齐归属。
