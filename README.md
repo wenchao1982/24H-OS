@@ -101,6 +101,18 @@ HERMES_RUNTIME_PYTHON=/path/to/hermes/venv/bin/python npm run probe
 | `GET /api/files/read` | `path` | `{name,path,size,mime_type,data_url,…}`（`data_url` 是 base64 data URL） |
 | `GET /api/sessions/search` | `q` | `{results:[…]}` |
 
+**设置相关的载荷形状**（严格契约，参数名写错会被拒，踩过一次）：
+
+| 动作 | 通道 | 参数 |
+|---|---|---|
+| 保存 API Key | WS `model.save_key` | `{ slug, api_key }`（**不是** `provider`/`key`） |
+| 设置默认模型 | **REST** `POST /api/model/set` | `{ scope: "main", provider, model }` |
+| 自定义 OpenAI 兼容端点 | REST `POST /api/providers/custom-endpoints` | `{ name, base_url, model, api_key?, make_default? }` |
+| 更新配置 | REST `PUT /api/config` | `{ config, profile? }` |
+
+注意 **WS 里没有 `model.set`** —— 设置模型只能走 REST。契约定义在核心的
+`tui_gateway/contracts/`（Pydantic，严格模式），所以参数名必须以那份为准。
+
 **会话生命周期规则**（实测）：
 
 - `session.close` 把会话从活跃集合摘除，返回 `{closed:true}`；已关闭再调返回 `{closed:false}`（幂等）

@@ -625,6 +625,51 @@ function refreshRunInfo() {
 
 /* ───────────────────────── 设置 ───────────────────────── */
 
+/** 自定义 OpenAI 兼容端点（火山/硅基流动/自建网关等） */
+async function loadCustomEndpoints() {
+  const box = $('custom-endpoints')
+  if (!box) return
+  const res = await window.hermes.customEndpoints()
+  box.textContent = ''
+  if (!res.ok) {
+    box.appendChild(el('div', 'hint', `读取失败：${res.error}`))
+    return
+  }
+  const list = Array.isArray(res.data) ? res.data : (res.data?.endpoints ?? [])
+  if (!list.length) {
+    box.appendChild(el('div', 'hint', '还没有自定义端点。'))
+    return
+  }
+  for (const e of list) {
+    box.appendChild(el('div', 'kv', `${e.name || e.id} · ${e.model} · ${e.base_url}`))
+  }
+}
+
+async function saveCustomEndpoint() {
+  const name = $('ce-name').value.trim()
+  const baseUrl = $('ce-base').value.trim()
+  const model = $('ce-model').value.trim()
+  const apiKey = $('ce-key').value.trim()
+  const status = $('ce-status')
+  if (!name || !baseUrl || !model) {
+    status.textContent = '名称 / Base URL / 模型名 都是必填'
+    return
+  }
+  const res = await window.hermes.customEndpointUpsert({
+    name,
+    base_url: baseUrl,
+    model,
+    api_key: apiKey || null,
+    make_default: true
+  })
+  status.textContent = res.ok ? '已保存，并设为默认模型。' : `保存失败：${res.error}`
+  if (res.ok) {
+    $('ce-key').value = ''
+    await loadCustomEndpoints()
+    await refreshModels()
+  }
+}
+
 async function loadSettingsForm() {
   const cfg = await window.hermes.configGet()
   if (cfg.ok) {
@@ -633,6 +678,7 @@ async function loadSettingsForm() {
     window.__cfg = c
   }
   renderProviderSelect()
+  await loadCustomEndpoints()
   refreshRunInfo()
 }
 
@@ -644,13 +690,15 @@ async function saveSettings() {
   status.textContent = ''
   try {
     if (key && provider) {
-      const r = await window.hermes.modelSaveKey({ provider, api_key: key, key })
+      // 核心的契约是 { slug, api_key }（不是 provider/key），参数名写错会被严格校验拒绝
+      const r = await window.hermes.modelSaveKey({ slug: provider, api_key: key })
       if (!r.ok) throw new Error(`保存 Key 失败：${r.error}`)
       $('set-key').value = ''
       status.textContent = `已保存 ${provider} 的 Key。`
     }
     if (model) {
-      const r = await window.hermes.modelSet({ model, provider: provider || undefined })
+      // 设置默认模型 = REST POST /api/model/set，体 { scope, provider, model }
+      const r = await window.hermes.modelSet({ scope: 'main', provider, model })
       if (!r.ok) throw new Error(`设置模型失败：${r.error}`)
       state.model = model
       status.textContent += ' 默认模型已更新。'
@@ -697,6 +745,7 @@ $('btn-close-settings').addEventListener('click', () => {
   $('settings').hidden = true
 })
 $('btn-save-settings').addEventListener('click', saveSettings)
+$('btn-ce-save').addEventListener('click', saveCustomEndpoint)
 $('btn-restart-core').addEventListener('click', async () => {
   const status = $('settings-status')
   status.textContent = '正在重启核心…'
@@ -706,7 +755,7 @@ $('btn-restart-core').addEventListener('click', async () => {
 $('model-select').addEventListener('change', async (e) => {
   const [provider, model] = String(e.target.value).split('::')
   if (!model) return
-  const res = await window.hermes.modelSet({ provider, model })
+  const res = await window.hermes.modelSet({ scope: 'main', provider, model })
   if (res.ok) {
     state.model = model
     $('session-label').textContent = `${provider} ${model}`

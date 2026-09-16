@@ -167,6 +167,51 @@ try {
     .catch((e) => ({ ok: false, message: e.message }))
   check('session.title 改名', renamed.ok, renamed.title ?? renamed.message)
 
+  // ── 设置页的载荷形状（踩过一次：save_key 的参数名写成 provider，被严格契约拒绝）──
+  // 判定标准：只要不是「参数校验失败」就算形状正确；模型/key 本身无效（如假 key）不算问题。
+  const isSchemaError = (msg) => /invalid params|Extra inputs|Extra inputs are not permitted|validation/i.test(String(msg || ''))
+
+  const saveKey = await gateway
+    .call('model.save_key', { slug: 'deepseek', api_key: 'sk-smoke-dummy' })
+    .then((r) => ({ ok: true, r }))
+    .catch((e) => ({ ok: false, message: e.message, code: e.code }))
+  check(
+    'model.save_key 载荷形状正确（slug + api_key）',
+    saveKey.ok || !isSchemaError(saveKey.message),
+    saveKey.ok ? '已保存（临时 home）' : `code=${saveKey.code} ${String(saveKey.message).slice(0, 60)}`
+  )
+
+  const setModel = await runtime
+    .request('POST', '/api/model/set', { scope: 'main', provider: 'deepseek', model: 'deepseek-chat' })
+    .then((r) => ({ ok: true, r }))
+    .catch((e) => ({ ok: false, message: e.message }))
+  check(
+    'POST /api/model/set 载荷形状正确（scope/provider/model）',
+    setModel.ok || !isSchemaError(setModel.message),
+    setModel.ok ? '已设置（临时 home）' : String(setModel.message).slice(0, 70)
+  )
+
+  const endpoints = await runtime
+    .request('GET', '/api/providers/custom-endpoints')
+    .then((r) => ({ ok: true, r }))
+    .catch((e) => ({ ok: false, message: e.message }))
+  check('GET /api/providers/custom-endpoints 可读', endpoints.ok, endpoints.ok ? '已读取' : String(endpoints.message).slice(0, 60))
+
+  const upsert = await runtime
+    .request('POST', '/api/providers/custom-endpoints', {
+      name: 'smoke-endpoint',
+      base_url: 'https://example.invalid/v1',
+      model: 'smoke-model',
+      make_default: false
+    })
+    .then((r) => ({ ok: true, r }))
+    .catch((e) => ({ ok: false, message: e.message }))
+  check(
+    'POST /api/providers/custom-endpoints 载荷形状正确',
+    upsert.ok || !isSchemaError(upsert.message),
+    upsert.ok ? '已写入（临时 home）' : String(upsert.message).slice(0, 70)
+  )
+
   const interrupted = await gateway
     .call('session.interrupt', { session_id: sid })
     .then(() => ({ ok: true }))

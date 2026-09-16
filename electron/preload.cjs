@@ -49,6 +49,8 @@ contextBridge.exposeInMainWorld('hermes', {
   modelsList: invoke('models:list'),
   modelSet: invoke('model:set'),
   modelSaveKey: invoke('model:saveKey'),
+  customEndpoints: invoke('providers:customEndpoints'),
+  customEndpointUpsert: invoke('providers:customEndpointUpsert'),
   configGet: invoke('config:get'),
   configSet: invoke('config:set'),
   capabilities: invoke('gateway:capabilities'),

@@ -140,8 +140,15 @@ handle('session:status', gwCall('session.status'))
 handle('session:title', gwCall('session.title'))
 handle('chat:send', gwCall('prompt.submit'))
 handle('models:list', gwCall('model.options'))
-handle('model:set', gwCall('model.set'))
+// 注意：WS 没有 model.set —— 设置默认模型是 REST POST /api/model/set（体：scope/provider/model）
+handle('model:set', (payload) => runtime.request('POST', '/api/model/set', payload ?? {}))
+// 保存 API Key 是 WS model.save_key，参数名是 slug（不是 provider）
 handle('model:saveKey', gwCall('model.save_key'))
+// 自定义 OpenAI 兼容端点（国产服务商常用）
+handle('providers:customEndpoints', () => runtime.request('GET', '/api/providers/custom-endpoints'))
+handle('providers:customEndpointUpsert', (payload) =>
+  runtime.request('POST', '/api/providers/custom-endpoints', payload ?? {})
+)
 // 配置走 REST（实测 WS 的 config.get 在空配置下返回 {}；/api/config 是 OpenAPI 里的正式接口）
 handle('config:get', () => runtime.request('GET', '/api/config'))
 handle('config:set', (payload) => runtime.request('PUT', '/api/config', payload?.config ?? payload))
