@@ -24,6 +24,7 @@ scripts/smoke.mjs     无界面冒烟测试（协议层端到端；`-- --static`
 scripts/ui-smoke.mjs  界面层冒烟（无头浏览器真渲染 index.html）
 scripts/after-pack.mjs / verify-package.mjs   打包时与打包后的自检
 scripts/gen-contract.mjs      从核心抓契约快照 → electron/contract.generated.json
+scripts/write-runtime-manifest.mjs / verify-runtime.mjs   运行时清单写入与体检（共用 lib/runtime-tree.mjs）
 scripts/make-icons.py         从 build/icon.png 生成 build/icon.ico
 docs/ci/ci.yml                 CI 模板（静态护栏 + 契约比对 + 界面层冒烟）；启用时复制到 .github/workflows/
 ```
@@ -168,6 +169,7 @@ npm run smoke -- --static  # 只跑静态护栏（含与核心契约的比对）
 npm run probe              # 更轻量：只验证核心启动 + 健康检查 + 一次鉴权调用
 npm run ui-smoke           # 界面层：用 chrome-headless-shell 打开 src/index.html，验导航/面板/命令面板/设置分节
 npm run verify:package     # 打包后：asar / 随包运行时能不能真的跑起来 / 安装包名字与 sha256
+npm run verify:runtime     # 运行时体检：清单（版本/commit/源码树指纹）与目录里实际是否一致
 node scripts/gen-contract.mjs     # 重新抓核心契约（升级核心后跑一次）
 node scripts/contract-probe.mjs   # 契约体检：核心到底给我们开放了哪些方法（含账号/计费）
 ```

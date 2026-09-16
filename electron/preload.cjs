@@ -65,6 +65,8 @@ contextBridge.exposeInMainWorld('hermes', {
   // 壳信息与原生能力（诊断页 / 数据目录 / 剪贴板 / 保存文件 / 原生菜单 / 更新）
   uiInfo: invoke('ui:info'),
   runtimeInfo: invoke('runtime:info'),
+  runtimeList: invoke('runtime:list'),
+  runtimeActivate: invoke('runtime:activate'),
   openPath: invoke('ui:openPath'),
   copyText: invoke('ui:copyText'),
   saveTextFile: invoke('ui:saveText'),

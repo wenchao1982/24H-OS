@@ -17,7 +17,9 @@
     "dist": "electron-builder --win nsis",
     "runtime:win": "powershell -ExecutionPolicy Bypass -File scripts/build-runtime.ps1",
     "icons": "python scripts/make-icons.py",
-    "verify:package": "node scripts/verify-package.mjs"
+    "verify:package": "node scripts/verify-package.mjs",
+    "verify:runtime": "node scripts/verify-runtime.mjs",
+    "manifest": "node scripts/write-runtime-manifest.mjs"
   },
   "devDependencies": {
     "electron": "40.10.2",

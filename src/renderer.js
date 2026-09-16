@@ -1433,6 +1433,49 @@ async function testConnection() {
   }
 }
 
+/** 设置 · 高级：运行时列表（多份并存时可切换；切换会重启核心） */
+async function renderRuntimeList() {
+  const box = $('runtime-list')
+  if (!box) return
+  const res = await window.hermes.runtimeList().catch(() => ({ ok: false, error: '调用失败' }))
+  box.textContent = ''
+  if (!res.ok) {
+    box.appendChild(el('div', 'hint', `读取运行时列表失败：${res.error}`))
+    return
+  }
+  const data = res.data ?? {}
+  const list = data.candidates ?? []
+  if (!list.length) {
+    box.appendChild(el('div', 'hint', '没有找到运行时目录（开发模式下可能来自 PATH 上的 hermes）'))
+    return
+  }
+  const kindLabel = { current: '当前默认', previous: '上一份（回退用）', archived: '历史版本' }
+  for (const item of list) {
+    const row = el('div', 'kv')
+    const left = el('span')
+    left.appendChild(el('code', null, item.name))
+    left.appendChild(el('span', 'hint', ` ${kindLabel[item.kind] ?? ''}${item.coreVersion ? ' · 核心 ' + item.coreVersion : ''}${item.coreCommit ? ' · ' + item.coreCommit.slice(0, 8) : ''}`))
+    row.appendChild(left)
+    const right = el('span')
+    const btn = el(
+      'button',
+      null,
+      data.pinned === item.dir ? '使用中' : item.usable ? '切换到此运行时' : '不可用'
+    )
+    btn.disabled = data.pinned === item.dir || !item.usable
+    btn.addEventListener('click', async () => {
+      $('runtime-status').textContent = `正在切换到 ${item.name} 并重启核心…`
+      const act = await window.hermes.runtimeActivate({ dir: item.dir })
+      $('runtime-status').textContent = act.ok ? `已切换到 ${item.name}，核心已重启。` : `切换失败：${act.error}`
+      renderRuntimeList()
+      refreshDiagnostics()
+    })
+    right.appendChild(btn)
+    row.appendChild(right)
+    box.appendChild(row)
+  }
+}
+
 async function checkUpdate() {
   const st = $('update-status')
   st.textContent = '正在检查…'
@@ -1549,6 +1592,7 @@ function openSettings(section) {
   if (section) setSettingsSection(section)
   markThemeSegment()
   loadSettingsForm()
+  renderRuntimeList()
 }
 document.querySelectorAll('#settings-nav button').forEach((b) =>
   b.addEventListener('click', () => setSettingsSection(b.dataset.sec))

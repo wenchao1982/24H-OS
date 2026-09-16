@@ -75,6 +75,8 @@ async function startRuntime() {
   runtime = new Runtime({
     appRoot: app.getAppPath(),
     resourcesPath: process.resourcesPath,
+    // 设置页可以手动指定运行时目录（多份运行时并存时切换用）；默认自动解析
+    pinnedRoot: readPrefs().runtimeDir || null,
     hermesHome: process.env.HERMES_HOME || path.join(app.getPath('userData'), 'hermes'),
     onLog: (line, stream) => pushLog(line, stream)
   })
@@ -267,6 +269,32 @@ handle('ui:contextMenu', (items) => {
       callback: () => resolve({ id: picked })
     })
   })
+})
+
+// 运行时：列出可用目录 + 切换（切换后重启核心）
+handle('runtime:list', () => {
+  const active = runtime?.pinnedRoot ?? runtime?._resolved?.root ?? null
+  return {
+    active,
+    pinned: readPrefs().runtimeDir ?? null,
+    candidates: Runtime.listCandidates({
+      appRoot: app.getAppPath(),
+      resourcesPath: process.resourcesPath
+    })
+  }
+})
+handle('runtime:activate', async (payload) => {
+  const dir = payload?.dir ? String(payload.dir) : null
+  const next = { ...readPrefs(), runtimeDir: dir }
+  fs.writeFileSync(prefsFile(), JSON.stringify(next, null, 2) + '\n', 'utf8')
+  // 换运行时必须重启核心（进程是拿旧 python 起的）
+  lastState = { phase: 'restarting' }
+  send('runtime:state', lastState)
+  gateway?.close()
+  gateway = null
+  await runtime?.stop()
+  await startRuntime()
+  return { runtimeDir: dir, state: lastState }
 })
 
 // 运行时清单（诊断页显示核心版本/构建时间/layout）

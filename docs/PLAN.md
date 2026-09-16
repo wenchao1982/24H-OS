@@ -330,7 +330,8 @@ model 3   prompt 3   approval 3   voice 3   spawn_tree 3   process 3   …
 ### F5 文件与预览（M2，已完成基本盘）
 - **依据**：REST `/api/fs/list`、`/api/files/read`（返回 `data_url`）；上游有"右侧预览面板 + 内置浏览器"；Studio 桌面甚至有完整浏览器模块（书签/下载/标注）。
 - **实现要点**：一期保持"目录树 + 文本/图片预览"（已做）；二期加"网页预览标签"（用 Electron 的 `WebContentsView` 或外链），**不**做完整浏览器。
-- **验收**：点开会话工作目录 → 列目录 → 预览 md/图片；越权路径要拒绝（待补：路径白名单/根目录约束）。
+- **验收**：点开会话工作目录 → 列目录 → 预览 md/图片。
+- **明确不做"文件访问路径白名单"**（原计划里有，2026-09-16 决定删掉）：这是用户自己电脑上的本机应用，用户在文件面板里浏览自己的磁盘本来就不是越权；而 agent 侧本来就跑在核心里、有完整文件系统权限，壳再限制一遍既挡不住真正的风险，又会让"我真想看一眼 D 盘那份日志"变成办不到。真要收紧，应当收紧agent 的工具权限（核心的 `approval.*` / `tools.configure`），而不是给用户自己的眼睛加锁。
 
 ### F6 设置与引导（已完成）
 - **现状**：设置拆成五个分节（服务商与模型 / 外观 / 数据与目录 / 诊断 / 高级）；诊断分节列出
@@ -356,10 +357,16 @@ model 3   prompt 3   approval 3   voice 3   spawn_tree 3   process 3   …
 - **核心运行时**：走 §5.2 的清单 + 资产（参照 Studio 的 sha256 + manifest）。
 - **回滚**：更新后启动失败 → 自动退回上一份运行时目录（参照 Studio `migratePendingRuntimeRoot` 的"待用目录"思路）。
 - **现状（已完成的部分）**：`electron-updater` 已进 dependencies；「设置 → 高级 → 检查更新」在**没配更新源**时会
-  明确说"未配置更新源"（而不是报错）；运行时清单已带 `coreCommit` / `coreTreeSha256` / `platform`；
-  **运行时回退**已实现并实测：当前 `runtime/` 起不来时自动改用 `runtime.prev`（把坏的 runtime 和好的
-  runtime.prev 摆在一起，壳成功回退并启动，日志给出原因）。
-- **还差**：把 `build.publish` 指向自己的分发源（对象存储/CDN），并做一次真实的"装 v1 → 升 v2"验证。
+  明确说"未配置更新源"（而不是报错）。
+- **运行时侧已做**：
+  · 清单带 `coreCommit` / `coreTreeSha256` / `coreFileCount` / `platform`，**写入与校验共用同一个指纹函数**
+    （`scripts/lib/runtime-tree.mjs` —— 之前 bash 与 JS 各写一份，永远对不上，已修正并实测一致）；
+  · `npm run verify:runtime` 发版前核对"清单说的"与"目录里实际是"是否一致（不一致可 `--rehash`）；
+  · **运行时回退**：当前 `runtime/` 起不来时自动改用 `runtime.prev`（实测：坏 runtime + 好 prev → 成功启动）；
+  · **运行时切换**：「设置 → 高级」列出 `runtime` / `runtime.prev` / `runtime.<版本>`，可手动切换并重启核心
+    （选择记在壳的 `ui-prefs.json`，实测 pinnedRoot 生效、失效时自动兜底到可用运行时）。
+- **还差**：把"从分发源下载运行时资产（sha256 校验 + 落到 `runtime.<版本>`）"这段做完 —— 需要先有分发源；
+  以及把 `build.publish` 指向分发源并做一次真实的"装 v1 → 升 v2"验证。
 - **验收**：装 v1 → 升 v2 → 数据（会话/key）不丢；再升级一次运行时资产，核心版本号变化且 UI 不崩。
 
 ### F11 一级导航与命令面板（已完成，原计划在 §12 的 2、3 步）

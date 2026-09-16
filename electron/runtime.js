@@ -16,7 +16,7 @@
  * 便于在没有图形环境的机器上验证"核心启动链路"。
  */
 import { spawn } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import path from 'node:path'
 import process from 'node:process'
 
@@ -50,6 +50,11 @@ export function resolveRuntime(ctx = {}) {
   // 每个 root 都试两个名字：runtime（当前）与 runtime.prev（上一份，更新失败时回退用）。
   // 顺序很重要：先当前再上一份，这样"换了运行时但起不来"能自动退回旧的那份。
   const candidates = []
+  // 壳里手动选定的运行时（ui-prefs.runtimeDir）优先，其次才是默认顺序
+  if (ctx.pinnedRoot) {
+    candidates.push(ctx.pinnedRoot)
+    if (!ctx.prevOnly) candidates.push(ctx.pinnedRoot + '.prev')
+  }
   for (const root of roots) {
     if (ctx.prevOnly) {
       candidates.push(root + '.prev') // 回退模式：只用上一份
@@ -91,11 +96,56 @@ export class Runtime {
    */
   constructor(opts = {}) {
     this.opts = opts
+    this.pinnedRoot = opts.pinnedRoot ?? null // 由壳从 ui-prefs 传进来（设置页可切换）
     this.child = null
     this.port = null
     this.exitInfo = null
     this._waiters = []
     this._onExit = null
+  }
+
+  /** 枚举可用的运行时目录（runtime、runtime.prev、runtime.<版本>），带清单信息 */
+  static listCandidates(ctx = {}) {
+    const roots = [
+      ctx.resourcesPath && path.join(ctx.resourcesPath),
+      ctx.appRoot
+    ].filter(Boolean)
+    const out = []
+    for (const base of roots) {
+      let entries = []
+      try {
+        entries = readdirSync(base, { withFileTypes: true })
+      } catch {
+        continue
+      }
+      for (const entry of entries) {
+        // 注意：runtime.prev 常常是指向别处的软链接，Dirent.isDirectory() 对软链接是 false
+        if (!entry.isDirectory() && !entry.isSymbolicLink()) continue
+        if (!/^runtime(\..+)?$/.test(entry.name)) continue
+        const dir = path.join(base, entry.name)
+        const venvPython = ['venv/bin/python', 'venv/Scripts/python.exe', 'bin/python', 'Scripts/python.exe']
+          .map((rel) => path.join(dir, rel))
+          .find((f) => existsSync(f))
+        const coreOk = existsSync(path.join(dir, 'core', 'hermes_cli'))
+        let manifest = null
+        try {
+          manifest = JSON.parse(readFileSync(path.join(dir, '.24h-os-runtime.json'), 'utf8'))
+        } catch {
+          /* 没有清单也能列出来，界面显示"无清单" */
+        }
+        out.push({
+          dir,
+          name: entry.name,
+          usable: Boolean(venvPython) && (coreOk || !entry.name.includes('prev')),
+          coreVersion: manifest?.coreVersion ?? null,
+          coreCommit: manifest?.coreCommit ?? null,
+          builtAt: manifest?.builtAt ?? null,
+          platform: manifest?.platform ?? null,
+          kind: entry.name === 'runtime' ? 'current' : entry.name.endsWith('.prev') ? 'previous' : 'archived'
+        })
+      }
+    }
+    return out
   }
 
   /** 给诊断页看的一句话描述（解析到哪个运行时） */
@@ -125,8 +175,8 @@ export class Runtime {
     if (this._starting) return this._starting
     this._starting = new Promise((resolve, reject) => {
       this.exitInfo = null
-      let runtime = resolveRuntime(this.opts)
-      if (this._allowPrevOnly) runtime = resolveRuntime({ ...this.opts, prevOnly: true })
+      let runtime = resolveRuntime({ ...this.opts, pinnedRoot: this.pinnedRoot })
+      if (this._allowPrevOnly) runtime = resolveRuntime({ ...this.opts, pinnedRoot: this.pinnedRoot, prevOnly: true })
       this._resolved = runtime
       const args = buildArgs(runtime, { profile: this.opts.profile })
 

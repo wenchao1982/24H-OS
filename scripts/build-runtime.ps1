@@ -167,8 +167,8 @@ Write-Host ("    核心就绪，端口 {0}" -f $port)
 # ── 7. 元数据 ───────────────────────────────────────────────────────────────
 $bytes = (Get-ChildItem $Runtime -Recurse -Force -File | Measure-Object -Property Length -Sum).Sum
 $sizeMB = [math]::Round($bytes / 1MB, 0)
-# 清单统一由 write-runtime-manifest.ps1 生成（coreCommit / 源码树指纹 / platform 都在那）
-& (Join-Path $PSScriptRoot "write-runtime-manifest.ps1") -Runtime $Runtime -Ref $Ref -CoreVersion $coreVer -PythonVersion $pyInfo.Ver -Mirror $Mirror
+# 清单统一由 scripts/write-runtime-manifest.mjs 生成（与 verify-runtime 共用同一个指纹函数）
+& node (Join-Path $PSScriptRoot "write-runtime-manifest.mjs") --dir $Runtime --ref $Ref --core-version $coreVer --python $pyInfo.Ver --mirror $Mirror
 
 Write-Host ("==> 完成：{0}（约 {1} MB）" -f $Runtime, $sizeMB)
 Write-Host ""

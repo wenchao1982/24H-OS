@@ -96,7 +96,15 @@ const RESP = {
   insights: { days: 30, sessions: 12, messages: 148 },
   usageBars: { ok: true, available: false },
   sessionUsage: { context_percent: 12, context_used: 3400, context_max: 28000, total: 3400, calls: 3 },
-  runtimeCheck: { ok: true, provider: 'deepseek' }
+  runtimeCheck: { ok: true, provider: 'deepseek' },
+  runtimeList: {
+    active: '/repo/runtime',
+    pinned: null,
+    candidates: [
+      { dir: '/repo/runtime', name: 'runtime', usable: true, coreVersion: '0.21.3', coreCommit: '948e9706aa11', kind: 'current' },
+      { dir: '/repo/runtime.prev', name: 'runtime.prev', usable: true, coreVersion: '0.21.2', coreCommit: '11aa2233bb44', kind: 'previous' }
+    ]
+  }
 }
 
 const browser = await puppeteer.launch({
@@ -277,6 +285,13 @@ const geo = await page.evaluate(() => {
   const last = document.querySelector('.settings-panes section:not([hidden]) :last-child').getBoundingClientRect()
   return { footTop: foot.top, panesBottom: panes.bottom, cardBottom: card.bottom, lastBottom: last.bottom }
 })
+const runtimeRows = await page.$$eval('#runtime-list .kv', (n) => n.map((x) => x.textContent))
+check(
+  '「高级」分节列出可用运行时（含上一份回退项）',
+  runtimeRows.length === 2 && runtimeRows.join(' ').includes('runtime.prev') && runtimeRows.join(' ').includes('0.21.2'),
+  runtimeRows.join(' | ').slice(0, 160)
+)
+
 check(
   '设置弹层不裁内容：底部「完成」栏在滚动区之下、卡片之内',
   geo.footTop >= geo.panesBottom - 1 && geo.footTop <= geo.cardBottom + 1,
