@@ -9,6 +9,7 @@ Electron 桌面壳，后端使用 [Hermes Agent](https://github.com/NousResearch
 
 - **[`docs/PLAN.md`](docs/PLAN.md) — 24H-OS 制作方案 v1**：上游 Hermes Desktop / Ekko Studio 桌面版架构解读 + 本产品的分层、分发、功能、里程碑（每条结论都带 `路径:行号` 出处）
 - [`docs/WINDOWS.md`](docs/WINDOWS.md) — 在 Windows 上跑起来 / 出安装包
+- [`docs/CORE-CONTRACT.md`](docs/CORE-CONTRACT.md) — 核心契约实测：billing/subscription/free_tier 到底开不开放，以及我们的三条路
 
 ## 目录
 
@@ -142,6 +143,8 @@ HERMES_RUNTIME_PYTHON=/path/to/hermes/venv/bin/python npm run probe
 npm run smoke     # 无图形环境也能跑：启动核心 → token → WS → 会话 → 发消息 → 事件闭环 → 恢复路径
 npm run probe     # 更轻量：只验证核心启动 + 健康检查 + 一次鉴权调用
 npm run ui-smoke  # 界面层：用 chrome-headless-shell 打开 src/index.html，验「藏得住/关得掉/加载得上」
+npm run verify:package    # 打包后：asar / 随包运行时能不能真的跑起来 / 安装包名字与 sha256
+node scripts/contract-probe.mjs   # 契约体检：核心到底给我们开放了哪些方法（含账号/计费）
 ```
 
 `npm run ui-smoke` 是界面层的护栏：它用真的浏览器渲染 `src/index.html`（`window.hermes` 用桩顶掉），
@@ -181,8 +184,9 @@ Nix / 开发用 editable。所以随包运行时 = 依赖装进 `runtime/venv`�
 **实测（2026-09-16）**：`scripts/build-runtime.sh main` 产出 **371 MB** 运行时（核心 0.21.3 + Python 3.12），
 `npm run smoke` 对这**自带运行时**跑出 **16/16 通过** —— 即"离线、不依赖上游安装器"这条路是通的。
 
-**发布前必须补的**：
+**发布前必须补的**（详细步骤见 [`docs/WINDOWS.md`](docs/WINDOWS.md) §三）：
 
-- `build/icon.ico`（256×256）—— 否则用 Electron 默认图标；
-- **Windows 代码签名证书** —— 没有它用户会遇到 SmartScreen 拦截。签名配置放在 `package.json` 的
-  `build.win`（`certificateFile` / `certificatePassword`，或用环境变量交给 CI）。
+- ~~图标~~ → **已有**：`build/icon.png`（1024 母版）+ `build/icon.ico`（7 个尺寸）；换图跑 `npm run icons`；
+- **Windows 代码签名证书**（唯一还缺的）—— 没有它用户会遇到 SmartScreen 拦截。配置已写好
+  （`build.win.signtoolOptions`），证书走 `WIN_CSC_LINK` / `WIN_CSC_KEY_PASSWORD` 环境变量；
+- 打包自检已就位：`afterPack` 钩子（`scripts/after-pack.mjs`）+ `npm run verify:package`。

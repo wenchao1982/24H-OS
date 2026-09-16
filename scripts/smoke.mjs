@@ -89,10 +89,24 @@ try {
   await gateway.connect()
   check('WS /api/ws 已连接', true)
 
-  const caps = await gateway.call('gateway.capabilities')
+  // 单个调用超时（默认 45s）只算这一项失败，不中止整轮 —— 有些调用会去探测服务商网络，
+  // 在国内网络下偶发很慢；整轮中止会让人误以为"通路坏了"。
+  const CALL_TIMEOUT_MS = Number(process.env.SMOKE_CALL_TIMEOUT_MS ?? 45000)
+  const gcall = (method, params) =>
+    Promise.race([
+      gateway.call(method, params),
+      new Promise((_resolve, reject) =>
+        setTimeout(
+          () => reject(Object.assign(new Error(`${method} 超时（${CALL_TIMEOUT_MS / 1000}s；可用 SMOKE_CALL_TIMEOUT_MS 调整）`), { code: 'client_timeout' })),
+          CALL_TIMEOUT_MS
+        )
+      )
+    ])
+
+  const caps = await gcall('gateway.capabilities')
   check('gateway.capabilities', typeof caps === 'object', JSON.stringify(caps).slice(0, 60))
 
-  const created = await gateway.call('session.create', { cols: 100, title: 'smoke' })
+  const created = await gcall('session.create', { cols: 100, title: 'smoke' })
   const sid = created?.session_id
   check('session.create 返回 session_id', Boolean(sid), `sid=${sid} model=${created?.info?.model}`)
 
@@ -115,7 +129,7 @@ try {
   //   - 活跃会话（在内存里）不能删 → 4023
   //   - 客户端应先 session.close 从活跃集合摘掉
   //   - 只有跑过对话真正落盘的会话才可删（本机无 key，删未落盘会话会得到 4007）
-  const throwaway = await gateway.call('session.create', { cols: 100, title: 'smoke throwaway' })
+  const throwaway = await gcall('session.create', { cols: 100, title: 'smoke throwaway' })
   const tsid = throwaway.session_id
   const delActive = await gateway
     .call('session.delete', { session_id: tsid })
@@ -139,18 +153,18 @@ try {
     .catch(() => ({ ok: false }))
   check('session.close 幂等（再调用返回 closed=false）', closeAgain.ok && closeAgain.closed === false)
 
-  const list = await gateway.call('session.list', {})
+  const list = await gcall('session.list', {})
   check('session.list', Array.isArray(list?.sessions), `${list?.sessions?.length ?? 0} 个会话`)
 
-  const hist = await gateway.call('session.history', { session_id: sid })
+  const hist = await gcall('session.history', { session_id: sid })
   check('session.history 结构 {count,messages}', Array.isArray(hist?.messages), `count=${hist?.count}`)
 
-  const models = await gateway.call('model.options')
+  const models = await gcall('model.options')
   check('model.options 返回服务商列表', Array.isArray(models?.providers), `${models?.providers?.length ?? 0} 个服务商`)
 
   // 发一条消息：观察完整事件序列。未配模型时，0.21.0 以 message.complete(status=error) 收尾，
   // 0.21.3 直接发 error 帧 —— 对壳而言"turn 结束"的信号是两者之一（UI 两条都处理）。
-  const submit = await gateway.call('prompt.submit', { session_id: sid, text: 'smoke test' })
+  const submit = await gcall('prompt.submit', { session_id: sid, text: 'smoke test' })
   check('prompt.submit 被接受', submit?.status === 'streaming', JSON.stringify(submit))
   await sleep(6000)
 
@@ -252,7 +266,7 @@ try {
     .catch((e) => ({ ok: false, code: e.code }))
   check('未知 session_id 返回 4001（可识别的错误码）', bogus.ok === false && bogus.code === 4001, `code=${bogus.code}`)
 
-  const stored = (await gateway.call('session.list', {}))?.sessions?.[0]?.id
+  const stored = (await gcall('session.list', {}))?.sessions?.[0]?.id
   if (stored) {
     const resumed = await gateway
       .call('session.resume', { session_id: stored, cols: 100 })

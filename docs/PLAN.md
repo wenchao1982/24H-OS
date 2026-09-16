@@ -39,7 +39,10 @@
 | R4 | 壳与核心**双向版本对齐** | 已有 `desktop_contract` 告警条；再补运行时清单里的 coreVersion 校验（换核心不静默） |
 | R5 | 质量工程**三层验证**：协议层 / 界面层 / 打包层 | 上游有真装真验的打包测试（`scripts/test-desktop.mjs` 支持 dmg/nsis/fresh/existing）；Studio 在 `afterPack` 校验打包产物（`verify-packaged-webui.mjs`）。我们已有前两层，缺第三层 |
 
-**商业化**：核心契约里**已内置账号/计费/订阅/免费额度**的方法族（`billing.*` 5 个、`subscription.*` 5 个、`free_tier.*` 3 个），二期做云服务时**优先"接现成的"而不是自建后端**（这些是否对我们开放属**未验证**，需与上游/自身服务端确认）。
+**商业化**：核心契约里**已内置账号/计费/订阅/免费额度**的方法族（`billing.*` 5 个、`subscription.*` 5 个、`free_tier.*` 3 个）。
+**已实测（2026-09-16）**：方法本身没有开关、都能调，但数据与操作全部指向 Nous 官方云
+（`portal.nousresearch.com`，token 取本机 provider `nous` 的登录态）；无账号只能拿到空态。
+→ 结论与三条路见 [`CORE-CONTRACT.md`](CORE-CONTRACT.md)：二期优先评估"自建门户兼容后端"（基址是环境变量，核心零改动）。
 
 ---
 
@@ -271,9 +274,11 @@ model 3   prompt 3   approval 3   voice 3   spawn_tree 3   process 3   …
 
 - 目标：**NSIS x64**（`nsis.oneClick=false / perMachine=false / allowToChangeInstallationDirectory`）——与两个参照一致。
 - 安装器预写 `display.language: zh`（已做 `build/installer.nsh`）。
-- **图标必须补**：`build/icon.ico`（256×256）——参照产品都有完整图标族（Studio 有 `icon.ico/icon.icns/icon.png + 托盘图标`）。
-- **代码签名（Authenticode）**：没有它用户必遇 SmartScreen 拦截；参照产品 mac 侧开了 notarize，Windows 侧上游反而关掉了自动改签（`signAndEditExecutable: false`）——说明签名要走独立流程。
-- **打包后自检**：学 Studio 的 `afterPack` 钩子，在打包末尾断言"运行时 + 必要文件真的进包了"。
+- **图标**：`build/icon.png`（1024 母版）+ `build/icon.ico`（7 尺寸，`npm run icons` 生成）。
+- **代码签名（Authenticode）**：配置已写进 `build.win.signtoolOptions`（sha256 + RFC3161 时间戳），
+  证书走 `WIN_CSC_LINK` / `WIN_CSC_KEY_PASSWORD`；**证书本身还没买**——这是 M1 唯一的外部依赖。
+  参照产品 mac 侧开了 notarize，Windows 侧上游反而关掉自动改签（`signAndEditExecutable: false`），说明签名要走独立流程。
+- **打包后自检**：已落地 `scripts/after-pack.mjs`（afterPack 钩子）+ `npm run verify:package`（含"随包 python 真拉起"）。
 
 ### 5.4 安装后的第一次体验（首启引导）
 
@@ -352,7 +357,8 @@ model 3   prompt 3   approval 3   voice 3   spawn_tree 3   process 3   …
 |---|---|---|---|
 | 协议层 | `npm run smoke` | **36/36** | 核心启动/握手/token/WS/会话/事件/文件/搜索/错误码/恢复路径 + 界面层静态护栏 |
 | 界面层 | `npm run ui-smoke` | **17/17** | 真浏览器渲染 `index.html`：弹层隐藏与关闭、核心晚就绪补加载、IPC `{ok,data}` 拆包 |
-| 打包层 | **缺** | — | 安装包真装真验：安装 → 首启 → 发消息 → 卸载（参照 `test-desktop.mjs` 的 fresh/existing 两种模式） |
+| 打包层 | `scripts/after-pack.mjs` + `npm run verify:package` | **已建（本机在 Linux 解包产物上验证通过）** | asar 入口文件齐不齐、随包运行时能不能真跑（拉起 python import 核心包）、安装包名字/sha256 |
+| 打包层（真机） | — | **缺** | 真装真验：安装 → 首启 → 发消息 → 卸载（参照 `test-desktop.mjs` 的 fresh/existing 两种模式） |
 
 ### 7.2 打包层验收清单（Windows，手工 + 脚本化）
 
@@ -376,7 +382,7 @@ model 3   prompt 3   approval 3   voice 3   spawn_tree 3   process 3   …
 | 阶段 | 内容 | 验收（机械） | 预估 |
 |---|---|---|---|
 | **M0 现状** | 壳 + 对话 + 会话 + 文件；协议/界面两层冒烟 | smoke 36/36、ui-smoke 17/17 | 已完成 |
-| **M1 交付**（当前冲刺） | Windows 真机跑通 GUI；`build/icon.ico`；代码签名；`npm run dist` 出包；打包层验收清单跑一遍 | 干净 Win 上装包能用（§7.2 全绿） | 1–2 周 |
+| **M1 交付**（当前冲刺） | Windows 真机跑通 GUI；~~图标~~ ✓；~~打包自检~~ ✓；代码签名证书（待买）；`npm run dist` 出包；打包层验收清单跑一遍 | 干净 Win 上装包能用（§7.2 全绿） | 1–2 周 |
 | **M2 打磨** | 启动进度与失败引导；错误中文化全覆盖；上下文用量；会话导出/撤销/分支；诊断一键复制 | 新增断言 + 手工清单 | 2–3 周 |
 | **M3 运行时通道** | 运行时清单 + sha256 + 资产发布；壳自更新（electron-updater）；核心独立升级与回滚；国产 provider 包 | 装 v1 → 升 v2 → 数据不丢；换运行时核心版本变化 | 3–4 周 |
 | **M4 商业化二期** | 账号/额度（先评估核心 `billing.*/subscription.*/free_tier.*` 是否可用）；多设备/远程；语音 | 付费闭环可走通（或明确"自建后端"的最小方案） | 待评估 |
@@ -444,3 +450,12 @@ model 3   prompt 3   approval 3   voice 3   spawn_tree 3   process 3   …
 - 已用能力：15 个 WS 方法、11 个事件、9 个 REST 端点（`electron/main.js` 的 `handle(...)` 列表）
 - 验证：`npm run smoke` 36/36、`npm run ui-smoke` 17/17
 - 运行时：`runtime/.24h-os-runtime.json`（coreRef/coreVersion/builtAt/python/pipMirror/layout）
+
+---
+
+## 11. 变更记录
+
+- 2026-09-16：M1 部分落地 —— 图标（`build/icon.png` + `build/icon.ico` + `npm run icons`）、
+  签名配置（`build.win.signtoolOptions`，证书走 `WIN_CSC_LINK`/`WIN_CSC_KEY_PASSWORD`）、
+  打包自检（`scripts/after-pack.mjs` + `npm run verify:package`，已在本机 Linux 解包产物上验证）；
+  核心契约"是否开放"已实测并单列 [`CORE-CONTRACT.md`](CORE-CONTRACT.md)。

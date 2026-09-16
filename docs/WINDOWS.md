@@ -174,13 +174,54 @@ node .\node_modules\electron\install.js
 ```powershell
 # 前提：第二步的 runtime\ 已构建好（安装包会把它一起打包进去）
 npm run dist            # = electron-builder --win nsis → release\24H-0.1.0-x64.exe
+npm run verify:package  # 产物体检：asar / 随包运行时 / 安装包名字与 sha256
 ```
 
-产物在 `release\`。**发布前必须补两样**：
+产物在 `release\`。打包过程有**两道自动检查**（不通过直接报错，不会静默出一个坏包）：
 
-1. **图标**：放 `build\icon.ico`（256×256），否则用 Electron 默认图标；
-2. **代码签名证书**：没有它用户会遇到 SmartScreen "未知发布者" 拦截。在 `package.json` 的
-   `build.win` 里配 `certificateFile` / `certificatePassword`（或交给 CI 的环境变量）。
+- `scripts/after-pack.mjs`（electron-builder 的 afterPack 钩子）：检查 asar 里有没有壳的入口文件、
+  `resources\runtime\` 里有没有核心源码树 + venv + 运行时清单，并打印运行时的核心版本与体积。
+  **故意跳过**运行时检查用 `$env:SKIP_RUNTIME_CHECK = "1"`（例如只想快速验证界面）。
+- `npm run verify:package`：检查解包目录与安装包，并**真的把随包 python 拉起来 import 一次核心包**
+  （venv 是可搬迁的，文件在 ≠ 能跑）。
+
+### 3.1 图标
+
+`build\icon.png` 是 1024×1024 母版，`build\icon.ico` 由它生成（含 16/24/32/48/64/128/256 七个尺寸）。
+换品牌只改母版：
+
+```powershell
+python -m pip install pillow        # 国内：--index-url https://mirrors.aliyun.com/pypi/simple/
+npm run icons                       # 从 build\icon.png 重新生成 build\icon.ico
+```
+
+### 3.2 代码签名（用户不看到"未知发布者"的前提）
+
+拿证书：国内可用沃通/天威诚信的 OV 代码签名证书，或直接用微软 **Azure Trusted Signing**
+（不用自己管 .pfx，适合 CI）。**没有签名，用户第一次装包一定会看到 SmartScreen 拦截。**
+
+配置已经写好（`package.json` 的 `build.win.signtoolOptions`：sha256 + RFC3161 时间戳），
+证书本身**走环境变量，不要写进仓库**：
+
+```powershell
+# 方式 1：本地出签名包（.pfx + 口令）
+$env:WIN_CSC_LINK = "C:\path\to\cert.pfx"      # 也可以是 https 地址或 base64
+$env:WIN_CSC_KEY_PASSWORD = "口令"
+npm run dist
+
+# 方式 2：Azure Trusted Signing（在 build.win.azureSignOptions 里填 endpoint/账号/证书配置文件，
+#          并先 az login）—— 细节以 electron-builder 文档为准
+```
+
+验签（装包前后都能查）：
+
+```powershell
+Get-AuthenticodeSignature .\release\24H-0.1.0-x64.exe | Format-List Status, SignerCertificate
+# Status 期望 Valid
+```
+
+内测阶段允许不签名：`build.win.forceCodeSigning` 保持 `false`；要"没签名就不许出包"，
+命令行加 `-c.win.forceCodeSigning=true`。
 
 安装包的行为（已在配置里写好）：
 
