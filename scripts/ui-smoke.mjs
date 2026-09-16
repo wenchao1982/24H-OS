@@ -60,7 +60,14 @@ const check = (name, ok, detail = '') => {
 
 const RESP = {
   state: { phase: 'starting', logs: [] },
-  modelsList: { providers: [{ slug: 'deepseek', name: 'DeepSeek', models: ['deepseek-chat', 'deepseek-reasoner'], is_current: true }] },
+  // 真实形状：全新安装时 include_unconfigured=1 会给出 54 项，其中 moa 是虚拟聚合器（不能填 key）
+  modelsList: {
+    providers: [
+      { slug: 'moa', name: 'Mixture of Agents', auth_type: 'virtual', authenticated: true, models: ['default'], is_current: false },
+      { slug: 'opencode-free', name: 'OpenCode Free', auth_type: 'hermes', authenticated: true, models: ['opencode-free'], is_current: false },
+      { slug: 'deepseek', name: 'DeepSeek', auth_type: 'api_key', authenticated: false, models: [], is_current: false, key_env: 'DEEPSEEK_API_KEY' }
+    ]
+  },
   sessionsList: { sessions: [{ id: 's1', title: '冒烟会话', message_count: 2 }] },
   sessionsCreate: { session_id: 's-new', info: { model: 'deepseek-chat' } },
   sessionHistory: {
@@ -125,7 +132,7 @@ const calls = await page.evaluate(() => window.__calls)
 check('核心就绪后补拉了模型列表', calls.includes('modelsList'), calls.join(','))
 check('核心就绪后补拉了会话列表', calls.includes('sessionsList'))
 const modelOpts = await page.$$eval('#model-select option', (o) => o.map((x) => x.textContent))
-check('模型下拉框里有服务商模型（不再是「读取中…」）', modelOpts.some((t) => t.includes('deepseek-chat')), modelOpts.join(' | '))
+check('没配 Key 时模型下拉给出明确下一步（不是空白）', modelOpts.some((t) => t.includes('设置')), modelOpts.join(' | '))
 const sessRows = await page.$$eval('#sessions > *', (n) => n.length)
 check('会话列表渲染出 1 条', sessRows === 1, `行数=${sessRows}`)
 
@@ -164,7 +171,9 @@ await page.click('#btn-settings')
 await wait(300)
 check('点「设置」能打开', (await display('#settings')) === 'flex', `display=${await display('#settings')}`)
 const provOpts = await page.$$eval('#set-provider option', (o) => o.map((x) => x.textContent))
-check('设置里服务商下拉框有内容', provOpts.length > 0 && provOpts[0].includes('DeepSeek'), provOpts.join(' | '))
+check('设置里服务商下拉框有内容且只列可填 Key 的', provOpts.length === 1 && provOpts[0].includes('DeepSeek'), provOpts.join(' | '))
+const provVals = await page.$$eval('#set-provider option', (o) => o.map((x) => x.value))
+check('虚拟/内置服务商（moa、opencode-free）不出现在可填 Key 的列表里', !provVals.includes('moa') && !provVals.includes('opencode-free'), provVals.join(' | '))
 await page.screenshot({ path: '/tmp/guitest/settings-open.png' })
 
 await page.click('#btn-close-settings-x')

@@ -102,6 +102,7 @@ npm run dev
 
 | 现象 | 原因 / 处理 |
 |---|---|
+| 设置里"服务商"只有 Mixture of Agents / OpenCode Free，填 Key 报 `保存 Key 失败：unknown provider: moa` | 这两个是虚拟/内置 provider，不接受 API Key。老版本壳用 `model.options`（不带 `include_unconfigured=1`）取目录，全新安装时只能看到它们。现已改为取完整目录并只列"可填 Key"的服务商（DeepSeek）；拉最新代码即可 |
 | `npm install` 只装了几十个包、`electron` 没装上 | `NODE_ENV=production` 会让 npm 跳过 devDependencies。按上面设成 `development` 并加 `--include=dev` |
 | Electron 下载很慢/超时 | 必须设 `ELECTRON_MIRROR`（上面给了 npmmirror 地址） |
 | `build-runtime.ps1` 报找不到 python 3.11–3.13 | 用 `-Python` 显式指定，例如 `-Python "C:\Python312\python.exe"` |

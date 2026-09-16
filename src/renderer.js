@@ -5,9 +5,16 @@
 const $ = (id) => document.getElementById(id)
 const LIMIT = { MESSAGES: 400, LOGS: 300 }
 
-/** 当前版本只对外提供 DeepSeek：模型下拉与设置里的服务商都按这张白名单过滤。
- *  如果核心这边一个都没匹配上（比如用户自己配了别的），就退回"显示全部"，免得界面变成死路。 */
+/** 当前版本只对外提供 DeepSeek：设置里的服务商、模型下拉都按这张白名单过滤。
+ *  匹配 slug 或 name（核心不同版本对 deepseek 的 name 有时是 "DeepSeek" 有时是 "deepseek"）。
+ *  一个都没匹配上就退回"全部可填 key 的服务商"，免得界面变成死路。 */
 const PROVIDER_ALLOWLIST = ['deepseek']
+/** 模型名兜底：核心要等填了 key 才会返回该服务商的模型列表，没 key 时给用户看这个（核心 0.21.3 的实名单） */
+const MODEL_FALLBACK = { deepseek: ['deepseek-v4-pro', 'deepseek-flash'] }
+const providerMatchesAllowlist = (p) =>
+  PROVIDER_ALLOWLIST.some((k) => String(p.slug ?? '').toLowerCase() === k || String(p.name ?? '').toLowerCase().includes(k))
+/** 只有 api_key 类服务商能接受 save_key；moa(virtual)/opencode-free(hermes)/oauth 类都填不了 key */
+const canHoldApiKey = (p) => p.auth_type === 'api_key'
 
 /** 主题：跟随系统 / 深色 / 浅色。刻意放在渲染层，壳不参与（换主题不需要重启核心）。 */
 const themeMedia = window.matchMedia('(prefers-color-scheme: light)')
@@ -33,6 +40,7 @@ const state = {
   sessionId: null, // 当前活跃会话（核心给的短 id）
   sessions: [],
   providers: [],
+  keyProviders: [], // 能填 API Key 的服务商（设置页用）
   providerNarrowed: false, // 是否被白名单收窄过（用于设置页那句说明）
   model: '',
   streaming: null, // { text, thinking, tools: Map }
@@ -366,16 +374,23 @@ async function runSearch(q) {
 function renderModelSelect() {
   const sel = $('model-select')
   sel.textContent = ''
-  if (!state.providers.length) {
-    sel.appendChild(new Option('模型：无可用服务商', ''))
-    return
-  }
-  for (const p of state.providers) {
-    const models = p.models?.length ? p.models : ['default']
-    for (const m of models) {
+  // 能真正跑起来的：已认证 + 有模型名单。当前版本只暴露 DeepSeek，所以再按白名单收一次；
+  // 白名单一个都没有（用户自己配了别的）就退回全部已认证的，别让下拉变空。
+  const authed = state.providers.filter((p) => p.authenticated && (p.models?.length || 0) > 0)
+  // 目录里有白名单服务商（DeepSeek）时走严格模式：没填 key 就只给"去设置填 Key"的提示，
+  // 不把 moa / opencode-free 这类摆上来（它们不是我们要卖的那条路）。目录里压根没有才退回全部。
+  const allowlistedInCatalog = state.providers.some(providerMatchesAllowlist)
+  const usable = allowlistedInCatalog ? authed.filter(providerMatchesAllowlist) : authed
+  for (const p of usable) {
+    for (const m of p.models) {
       const label = `${p.name || p.slug}${p.is_current ? '（当前）' : ''} · ${m}`
       sel.appendChild(new Option(label, `${p.slug}::${m}`))
     }
+  }
+  if (!usable.length) {
+    // 还没填 key：不要给一个空白下拉 —— 直接说下一步该干什么
+    sel.appendChild(new Option('模型：先在「设置」里填 DeepSeek API Key', ''))
+    return
   }
   if (state.model) {
     for (const opt of sel.options) if (opt.value.endsWith(`::${state.model}`)) sel.value = opt.value
@@ -385,15 +400,17 @@ function renderModelSelect() {
 function renderProviderSelect() {
   const sel = $('set-provider')
   sel.textContent = ''
-  for (const p of state.providers) {
-    sel.appendChild(new Option(`${p.name || p.slug}${p.is_current ? '（当前）' : ''}`, p.slug))
+  const list = (state.keyProviders ?? []).filter((p) => p.slug)
+  for (const p of list) {
+    const state_ = p.authenticated ? '' : '（未配置 Key）'
+    sel.appendChild(new Option(`${p.name || p.slug}${state_}`, p.slug))
   }
-  if (!state.providers.length) sel.appendChild(new Option('（未读到服务商）', ''))
+  if (!list.length) sel.appendChild(new Option('（没读到可填 Key 的服务商）', ''))
   const hint = $('provider-hint')
   if (hint) {
     hint.textContent = state.providerNarrowed
-      ? '当前版本只对外提供 DeepSeek：这里只列 DeepSeek。核心支持的其它服务商在「高级」里可以按自定义端点接入。'
-      : '从核心读取的可用服务商；带「当前」标记的是正在使用的。'
+      ? '当前版本只提供 DeepSeek：在 platform.deepseek.com 申请 Key，粘贴后保存。其它服务商可走下面的「高级 → 自定义端点」。'
+      : '只列出可以直接填 API Key 的服务商（聚合/内置类服务商不接受 Key，已隐藏）。'
   }
 }
 
@@ -444,11 +461,13 @@ async function refreshModels() {
     $('model-select').appendChild(new Option(`模型读取失败：${res.error}`, ''))
     return
   }
-  const all = res.data?.providers ?? []
-  const allowed = all.filter((p) => PROVIDER_ALLOWLIST.includes(p.slug))
-  // 白名单命中就用白名单；一个都没命中（用户自己配了别的）就显示全部，避免界面变成死路
-  state.providers = allowed.length ? allowed : all
-  state.providerNarrowed = allowed.length > 0 && allowed.length < all.length
+  const all = (res.data?.providers ?? []).filter((p) => p && p.slug)
+  state.providers = all
+  // 设置页的服务商：只列"能填 API Key"的；白名单命中就用白名单，否则退回"全部能填 key 的"
+  const keyable = all.filter(canHoldApiKey)
+  const allowed = keyable.filter(providerMatchesAllowlist)
+  state.keyProviders = allowed.length ? allowed : keyable
+  state.providerNarrowed = allowed.length > 0 && allowed.length < keyable.length
   renderModelSelect()
   renderProviderSelect()
 }
@@ -836,6 +855,12 @@ async function saveCustomEndpoint() {
   }
 }
 
+function suggestModel(providerSlug) {
+  const p = (state.keyProviders ?? []).find((x) => x.slug === providerSlug)
+  if (p?.models?.length) return p.models[0]
+  return (MODEL_FALLBACK[providerSlug] ?? [])[0] ?? ''
+}
+
 async function loadSettingsForm() {
   const status = $('settings-status')
   if (state.corePhase !== 'ready') {
@@ -852,7 +877,8 @@ async function loadSettingsForm() {
   const cfg = await window.hermes.configGet()
   if (cfg.ok) {
     const c = cfg.data ?? {}
-    $('set-model').value = c.model ?? state.model ?? ''
+    $('set-model').value = c.model || state.model || suggestModel($('set-provider').value)
+    $('set-model').placeholder = suggestModel($('set-provider').value) || 'deepseek-v4-pro'
     window.__cfg = c
   }
   renderProviderSelect()
@@ -866,14 +892,30 @@ async function saveSettings() {
   const key = $('set-key').value.trim()
   const model = $('set-model').value.trim()
   const status = $('settings-status')
+  const saveBtn = $('btn-save-settings')
   status.textContent = ''
   try {
     if (key && provider) {
-      // 核心的契约是 { slug, api_key }（不是 provider/key），参数名写错会被严格校验拒绝
-      const r = await window.hermes.modelSaveKey({ slug: provider, api_key: key })
-      if (!r.ok) throw new Error(`保存 Key 失败：${r.error}`)
+      // 核心的契约是 { slug, api_key }（不是 provider/key），参数名写错会被严格校验拒绝。
+      // 保存可能要几秒（核心会去服务商那边验证 key），所以给"保存中…"+禁用按钮，别让用户重复点。
+      saveBtn.disabled = true
+      status.textContent = '正在保存并校验 Key…'
+      let r
+      try {
+        r = await window.hermes.modelSaveKey({ slug: provider, api_key: key })
+      } finally {
+        saveBtn.disabled = false
+      }
+      if (!r.ok) {
+        // 4002 unknown provider：说明选到了一个不接受 Key 的服务商（虚拟聚合/内置类）
+        const hint = /unknown provider/i.test(r.error || '')
+          ? '这个服务商不接受 API Key（它是聚合或内置类型）。请在"服务商"里选 DeepSeek。'
+          : r.error
+        throw new Error(`保存 Key 失败：${hint}`)
+      }
       $('set-key').value = ''
       status.textContent = `已保存 ${provider} 的 Key。`
+      await refreshModels() // key 生效后核心才会给出该服务商的模型名单
     }
     if (model) {
       // 设置默认模型 = REST POST /api/model/set，体 { scope, provider, model }

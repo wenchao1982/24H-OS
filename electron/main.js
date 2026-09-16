@@ -140,7 +140,11 @@ handle('session:cwdSet', gwCall('session.cwd.set'))
 handle('session:status', gwCall('session.status'))
 handle('session:title', gwCall('session.title'))
 handle('chat:send', gwCall('prompt.submit'))
-handle('models:list', gwCall('model.options'))
+// 模型与服务商目录：必须带 include_unconfigured=1 ——
+// 默认的 model.options 只返回"已认证/可用"的（全新安装时只有 moa、opencode-free 这种虚拟/内置项），
+// 于是设置页会列出 moa（虚拟聚合器），用户一填 key 就报 4002 unknown provider: moa。
+// include_unconfigured=1 才给出完整目录（实测 54 个，含 deepseek：auth_type=api_key）。
+handle('models:list', () => runtime.request('GET', '/api/model/options?include_unconfigured=1'))
 // 注意：WS 没有 model.set —— 设置默认模型是 REST POST /api/model/set（体：scope/provider/model）
 handle('model:set', (payload) => runtime.request('POST', '/api/model/set', payload ?? {}))
 // 保存 API Key 是 WS model.save_key，参数名是 slug（不是 provider）

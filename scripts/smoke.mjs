@@ -63,6 +63,10 @@ const check = (name, ok, detail = '') => {
   check('文件图标用 CSS 画（不依赖 emoji 字体）', iconCss, iconCss ? '有 .entry.dir/.file 图标规则' : '缺 CSS 图标规则，会退回 emoji')
   const richSrc = /function renderRich/.test(rendererSrc) && /\.md-table/.test(cssSrc)
   check('助手回复走 Markdown 渲染', richSrc, richSrc ? 'renderRich + .md-* 样式齐' : '缺 renderRich 或 .md-* 样式：回复会显示裸 Markdown')
+  // 不带 include_unconfigured=1 的话，全新安装只会拿到 moa/opencode-free 这类虚拟项，
+  // 用户一填 key 就是 4002 unknown provider（实机踩过）
+  const catalogOk = /include_unconfigured=1/.test(mainJs)
+  check('模型目录带 include_unconfigured=1（否则只能看到虚拟 provider）', catalogOk, catalogOk ? '已带' : '缺：设置页会列出 moa 这类不能填 key 的项')
 }
 
 // 核心 home 隔离：这条链路会真的写配置（model.save_key 会覆盖 key、还会写自定义端点），
@@ -165,6 +169,25 @@ try {
 
   const models = await gcall('model.options')
   check('model.options 返回服务商列表', Array.isArray(models?.providers), `${models?.providers?.length ?? 0} 个服务商`)
+
+  // ── 服务商目录（设置页依赖它）────────────────────────────────────────────
+  // 实机踩过：不带 include_unconfigured 时，全新安装只返回 moa/opencode-free 这类虚拟/内置项，
+  // 用户选了 moa 再填 key → 4002 unknown provider: moa。这里把两种情况都钉住。
+  const plain = await runtime.request('GET', '/api/model/options').catch(() => null)
+  const plainSlugs = (plain?.providers ?? []).map((p) => p.slug)
+  check(
+    '不带 include_unconfigured 时只给"可用项"（这正是当初的坑）',
+    !plainSlugs.includes('deepseek'),
+    plainSlugs.join(',') || '(空)'
+  )
+  const catalog = await runtime.request('GET', '/api/model/options?include_unconfigured=1').catch(() => null)
+  const keyable = (catalog?.providers ?? []).filter((p) => p.auth_type === 'api_key')
+  const ds = keyable.find((p) => /deepseek/i.test(p.slug + ' ' + (p.name ?? '')))
+  check(
+    '完整目录里有可填 Key 的 DeepSeek（设置页只列这一类）',
+    Boolean(ds),
+    ds ? `slug=${ds.slug} key_env=${ds.key_env} authenticated=${ds.authenticated}` : `keyable=${keyable.length} 项里没有 deepseek`
+  )
 
   // 发一条消息：观察完整事件序列。未配模型时，0.21.0 以 message.complete(status=error) 收尾，
   // 0.21.3 直接发 error 帧 —— 对壳而言"turn 结束"的信号是两者之一（UI 两条都处理）。
