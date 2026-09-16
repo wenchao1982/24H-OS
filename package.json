@@ -19,7 +19,9 @@
     "icons": "python scripts/make-icons.py",
     "verify:package": "node scripts/verify-package.mjs",
     "verify:runtime": "node scripts/verify-runtime.mjs",
-    "manifest": "node scripts/write-runtime-manifest.mjs"
+    "manifest": "node scripts/write-runtime-manifest.mjs",
+    "portal:mock": "node scripts/dev/mock-portal.mjs",
+    "portal:spike": "node scripts/dev/portal-spike.mjs"
   },
   "devDependencies": {
     "electron": "40.10.2",

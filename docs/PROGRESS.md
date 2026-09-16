@@ -87,6 +87,12 @@
 
 ## 6. 变更记录
 
+- 2026-09-16（第七次）：**M4 的关键验证做完了** —— 「门户兼容后端」可行，核心零改动。
+  `scripts/dev/mock-portal.mjs` 实现 8 个 `/api/billing/*`，`scripts/dev/portal-spike.mjs` 用
+  `HERMES_PORTAL_BASE_URL` 把核心指过去，实测 5/5：余额/套餐/用量读数与下单、查单全部走通，
+  mock 日志证明 4 个请求都打到我们的服务端。**唯一没验的是"登录链"**（本次直接写 auth.json 绕过），
+  建议二期走"壳侧登录 + 壳写 auth.json"，细节与字段表见 `docs/CORE-CONTRACT.md` §四。
+
 - 2026-09-16（第六次）：修用户实机报的「读取历史失败: session not found」。
   真因：核心有**两套 id** —— 列表里的 stored id 与运行时的 session_id。`session.resume` 之后运行时 id 会**变**，
   而壳里原来的恢复逻辑是"resume 完拿**旧 id** 重试"，等于白重试；渲染层读历史时也用的是 stored id。

@@ -59,3 +59,58 @@
 - 若选 C，**不要**去动核心的 billing 方法，避免与上游语义冲突。
 
 **拍板建议**：一期维持 C（自带 key）；二期在 A 与 B 之间做一次 1–2 天的技术验证（先验证 B 的最小闭环：把门户指到本地 mock，看核心是否正常读账单/下单），再决定。**不要在验证前承诺"我们能做自己的计费闭环"。**
+
+---
+
+## 四、"门户兼容后端"最小验证：**已跑通**（2026-09-16）
+
+问题：选项 B（自建门户兼容后端）到底可不可行？——**可行，且核心零改动**。以下是实测。
+
+**做法**（全部本机、不联网）：
+1. `scripts/dev/mock-portal.mjs`——实现那 8 个 `/api/billing/*` 端点，并给每个请求打日志；
+2. 造一个隔离的 `HERMES_HOME/auth.json`，写入 provider `nous` 的本地 token：
+   ```json
+   { "active_provider": "nous",
+     "providers": { "nous": { "access_token": "local-token-abc123", "refresh_token": "local-refresh",
+                              "token_type": "Bearer", "scope": "billing:manage",
+                              "expires_at": "<30 天后的 ISO 时间>", "client_id": "local-client" } } }
+   ```
+   （`expires_at` 是 **ISO 时间戳**；放远一点就走"未过期直接用"的快路径，不触发 refresh。）
+3. 用 `HERMES_PORTAL_BASE_URL=http://127.0.0.1:8799` 起核心；
+4. `scripts/dev/portal-spike.mjs` 依次调用 `billing.state / subscription.state / usage.bars / billing.charge / billing.charge_status`。
+
+**实测结果（5/5 通过，`npm run portal:spike`）**：
+
+```
+✓ billing.state 读到我们门户的余额 — logged_in=true balance=$42.50 org=本地门户（mock） can_charge=true
+✓ subscription.state 读到我们门户的套餐表 — current=plus tiers=[free,plus(当前),pro] can_change_plan=false
+✓ usage.bars 有读数 — {"ok":true,"available":true,...}
+✓ billing.charge 下单（写操作走我们门户） — {"ok":true,"charge_id":"ch_local_1","idempotency_key":"589133b7-…"}
+✓ billing.charge_status 查询订单 — {"ok":true,"status":"succeeded","amount_usd":"10"}
+
+mock 门户收到 4 个 /api/billing/* 请求（带我们的本地 token）：
+   GET  /api/billing/state
+   GET  /api/billing/subscription
+   POST /api/billing/charge                       idem=589133b7-…
+   GET  /api/billing/charge/ch_local_1
+```
+
+**由此确定的事实**：
+
+| 事项 | 结论 |
+|---|---|
+| 门户地址 | `HERMES_PORTAL_BASE_URL` / `NOUS_PORTAL_BASE_URL` 是**最高优先级**的运维开关（`hermes_cli/auth.py:1599-1606`），绕过 host 白名单 → 指到我们自己的域名即可 |
+| 要实现的接口 | 就是那 8 个 `/api/billing/*`（state / charge / charge/{id} / auto-top-up / subscription / subscription-preview / pending-change / upgrade）；写操作带 `Idempotency-Key` |
+| 响应字段名 | `state`：`balanceUsd`(字符串金额)/`cliBillingEnabled`/`chargePresets`/`minUsd`/`maxUsd`/`org{id,slug,name}`/`role`/`card{brand,last4}`/`monthlyCap`/`autoReload`/`portalUrl`；`subscription`：`current{tierId,tierName,…}` + `tiers[]{tierId,name,tierOrder,isCurrent,isEnabled,dollarsPerMonthDisplay,monthlyCredits}`（**tiers 里是 `name` 不是 `tierName`**，实测踩过一次） |
+| 身份 | 核心读 `HERMES_HOME/auth.json` 里 provider `nous` 的 `access_token`（ISO `expires_at` + `scope` 里要有 `billing:manage`，否则核心会跳过注定 403 的写操作） |
+| 前端 | 账单/套餐页可以直接复用核心返回的字段（余额、套餐表、用量条），**不用自研这一层 UI** |
+
+**还没验证的一件事（下一步的关键）**：**登录链**——本次是把 token 直接写进 `auth.json` 绕过了登录。
+真实产品需要"用户在我们这边登录 → 拿到 token → 写进 `auth.json`（或让核心走 OAuth 设备流打我们的端点）"。
+工作量集中在服务端（签发 + 校验 + 刷新），可选两条路：
+① 壳侧登录（我们自己走自己的 OAuth/验证码，登录成功后由壳写 `auth.json` 的 `nous` 段）——**最省事，不碰核心**；
+② 实现核心期望的 OAuth 设备流端点（让核心自己去登录我们的服务端）——更"原生"，但要逆向门户的 OAuth 契约。
+
+**对商业化的建议**：二期选 ①。它把"账号/额度"收在我们自己的服务端，核心只当"显示与下单的通道"；
+且这条路已经用 5/5 的实测证明"核心侧不需要任何修改"。
+
