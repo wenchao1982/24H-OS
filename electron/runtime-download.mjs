@@ -23,12 +23,10 @@ const fetchJson = async (url, timeoutMs = 20000) => {
   return res.json()
 }
 
+import { platformCompatible, platformKey } from '../scripts/lib/platform.mjs'
+
 /** 当前平台标识（与 package-runtime 的产物一致：win-x64 / linux-x64 / darwin-arm64 …） */
-export function platformKey(platformName = process.platform, arch = process.arch) {
-  if (platformName === 'win32') return 'win-x64'
-  if (platformName === 'darwin') return `darwin-${arch}`
-  return `${platformName}-${arch}`
-}
+export { platformKey }
 
 /**
  * 读分发源上的清单。
@@ -49,7 +47,8 @@ export async function fetchDistManifest(baseUrl, { platform = platformKey() } = 
     })
   }
   if (!manifest?.name || !manifest?.sha256) throw new Error('分发源的清单里缺 name / sha256 字段')
-  if (manifest.platform && manifest.platform !== platform) {
+  // 宽容比较：manifest 里可能写 "win32"（PowerShell 构建脚本的历史写法）或 "win-x64"，都认
+  if (manifest.platform && !platformCompatible(manifest.platform, platform)) {
     throw new Error(`分发源上的是 ${manifest.platform} 资产，当前机器是 ${platform}（放对应平台的目录）`)
   }
   return { ...manifest, url: `${usedBase}/${manifest.name}` }

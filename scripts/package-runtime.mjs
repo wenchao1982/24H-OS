@@ -17,6 +17,7 @@ import { createHash } from 'node:crypto'
 import { createReadStream, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import path from 'node:path'
+import { platformKey } from './lib/platform.mjs'
 
 const root = path.resolve(import.meta.dirname, '..')
 const args = process.argv.slice(2)
@@ -41,7 +42,12 @@ try {
 }
 
 const coreVersion = manifest.coreVersion ?? 'unknown'
-const platform = platformOverride ?? manifest.platform ?? `${process.platform}-${process.arch}`
+// 平台以**当前构建机**为准：manifest 里可能是 "win32"（PowerShell 脚本的历史写法），
+// 而资产目录/文件名必须与下载器找的 win-x64 / linux-x64 一致，否则会出现"检查更新成功、下载 404"。
+const platform = platformOverride ?? platformKey()
+if (manifest.platform && manifest.platform !== platform) {
+  console.log(`  （清单里写的是 ${manifest.platform}，按当前构建机记作 ${platform}）`)
+}
 const name = `hermes-runtime-${coreVersion}-${platform}.tar.gz`
 // 按平台分子目录：分发源上多平台并存（win-x64 / linux-x64 / mac-arm64 …），客户端只取自己那份
 const platDir = path.join(outDir, platform)
@@ -49,8 +55,15 @@ mkdirSync(platDir, { recursive: true })
 const archive = path.join(platDir, name)
 
 // tar -czf（Linux/macOS 自带；Windows 10+ 自带 tar.exe）；排除 venv 里的 __pycache__ 省点体积
-const excludes = ['--exclude=**/__pycache__', '--exclude=**/*.pyc', '--exclude=.git']
-execFileSync('tar', ['-czf', archive, ...excludes, '-C', runtimeDir, '.'], { stdio: 'inherit' })
+// 用系统 tar（Windows 10+ 自带）。有些 tar（bsdtar）对 --exclude 的写法更挑，失败就退回"不排除"再打一次
+const excludes = ['--exclude=**/__pycache__', '--exclude=**/*.pyc']
+const tarOnce = (extra) => execFileSync('tar', ['-czf', archive, ...extra, '-C', runtimeDir, '.'], { stdio: 'inherit' })
+try {
+  tarOnce(excludes)
+} catch (err) {
+  console.log(`  （tar 带排除参数失败，改为完整打包：${String(err.message).split('\n')[0]}）`)
+  tarOnce([])
+}
 
 const sha256 = await new Promise((resolve, reject) => {
   const hash = createHash('sha256')

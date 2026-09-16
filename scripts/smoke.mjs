@@ -90,6 +90,20 @@ const check = (name, ok, detail = '') => {
     check('契约快照存在（node scripts/gen-contract.mjs 生成）', false, '缺 electron/contract.generated.json')
   }
 
+  // 平台标识一致性（Windows 上"产出的目录名"必须等于"下载器找的目录名"，否则下载 404）
+  {
+    const { platformKey, platformCompatible } = await import('./lib/platform.mjs')
+    const cases = [
+      [platformKey('win32', 'x64') === 'win-x64', 'platformKey(win32,x64) = win-x64'],
+      [platformKey('linux', 'x64') === 'linux-x64', 'platformKey(linux,x64) = linux-x64'],
+      [platformCompatible('win32', 'win-x64') === true, 'win32 与 win-x64 视为兼容'],
+      [platformCompatible('linux-x64', 'win-x64') === false, 'linux-x64 与 win-x64 不兼容'],
+      [platformCompatible('win-x64', 'win-arm64') === false, 'x64 与 arm64 不兼容']
+    ]
+    const bad = cases.filter(([ok]) => !ok).map(([, name]) => name)
+    check('平台标识与兼容性判断正确（资产目录/护栏靠它）', bad.length === 0, bad.length ? `失败：${bad.join('；')}` : `${cases.length} 条断言通过`)
+  }
+
   const pkgJson = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'))
   const updaterDep = Boolean(pkgJson.dependencies?.['electron-updater'])
   check('壳自更新依赖已声明（electron-updater）', updaterDep, updaterDep ? '在 dependencies 里' : 'package.json 的 dependencies 缺 electron-updater')
