@@ -1,34 +1,40 @@
 /**
- * Electron 主进程：开窗 → 启动核心 → 把状态推给渲染进程。
- * 关窗/退出时优雅关闭核心进程（不留孤儿进程）。
+ * Electron 主进程：开窗 → 启动核心 → 建立实时通道 → 把能力暴露给渲染进程。
+ *
+ * 分工：主进程持有 python 子进程与 WebSocket，渲染进程只通过 IPC 调方法、收事件。
  */
 import { BrowserWindow, app, ipcMain, shell } from 'electron'
 import path from 'node:path'
+import { Gateway } from './gateway.js'
 import { Runtime } from './runtime.js'
 
 /** @type {BrowserWindow | null} */
 let win = null
 /** @type {Runtime | null} */
 let runtime = null
-/** 最近的核心日志（渲染进程晚订阅也能拿到） */
+/** @type {Gateway | null} */
+let gateway = null
 const logBuffer = []
 let lastState = { phase: 'starting' }
+let token = null
 
 function send(channel, payload) {
-  win?.webContents.send(channel, payload)
+  if (win && !win.isDestroyed()) win.webContents.send(channel, payload)
 }
 
-function pushLog(line, stream) {
+function pushLog(line, stream = 'stdout') {
   const entry = { line, stream, at: Date.now() }
   logBuffer.push(entry)
-  if (logBuffer.length > 500) logBuffer.shift()
+  if (logBuffer.length > 800) logBuffer.shift()
   send('runtime:log', entry)
 }
 
 function createWindow() {
   win = new BrowserWindow({
-    width: 980,
-    height: 680,
+    width: 1180,
+    height: 780,
+    minWidth: 900,
+    minHeight: 600,
     title: '24H',
     backgroundColor: '#0b0f14',
     webPreferences: {
@@ -44,13 +50,27 @@ function createWindow() {
   })
 }
 
+/** 核心就绪后：取会话 token → 建立 WS 通道。 */
+async function connectGateway() {
+  token = await runtime.sessionToken()
+  gateway = new Gateway({
+    baseUrl: runtime.baseUrl,
+    token,
+    log: (m) => pushLog(`[gateway] ${m}`, 'gateway')
+  })
+  gateway.on('event', (evt) => send('gateway:event', evt))
+  gateway.on('close', () => send('gateway:status', { connected: false }))
+  gateway.on('open', () => send('gateway:status', { connected: true }))
+  await gateway.connect()
+  send('gateway:status', { connected: true, authRequired: Boolean(token) })
+}
+
 async function startRuntime() {
   runtime = new Runtime({
     appRoot: app.getAppPath(),
     resourcesPath: process.resourcesPath,
-    // 用户数据放 userData 下，别污染 $HOME；HERMES_HOME 可覆盖（便于复用已装好的核心）
     hermesHome: process.env.HERMES_HOME || path.join(app.getPath('userData'), 'hermes'),
-    onLog: pushLog
+    onLog: (line, stream) => pushLog(line, stream)
   })
   runtime.onExit((info) => {
     lastState = { phase: 'exited', ...info }
@@ -61,37 +81,75 @@ async function startRuntime() {
     const port = await runtime.start()
     lastState = { phase: 'ready', port, baseUrl: runtime.baseUrl }
     send('runtime:ready', { port, baseUrl: runtime.baseUrl })
+    await connectGateway()
   } catch (err) {
     lastState = { phase: 'failed', message: err.message }
     send('runtime:error', { message: err.message })
   }
 }
 
-ipcMain.handle('runtime:state', () => ({ ...lastState, logs: logBuffer.slice(-200) }))
+/** 统一包装：IPC 调用里的异常变成 {error} 而不是抛穿进程边界。 */
+function handle(channel, fn) {
+  ipcMain.handle(channel, async (_event, payload) => {
+    try {
+      return { ok: true, data: await fn(payload) }
+    } catch (err) {
+      return { ok: false, error: err.message || String(err) }
+    }
+  })
+}
 
-ipcMain.handle('runtime:info', async () => {
-  if (!runtime?.baseUrl) return null
+/** 需要 gateway 就绪的调用。会话类调用若撞上 4001（运行时已不持有该会话），
+ *  自动用同一个 id 走 session.resume 后重试一次 —— 这是核心要求客户端做的恢复动作。 */
+const gwCall = (method) => async (payload = {}) => {
+  if (!gateway) throw new Error('核心尚未就绪')
   try {
-    return { health: await runtime.health(), status: (await runtime.api('/api/status')).body }
+    return await gateway.call(method, payload ?? {})
   } catch (err) {
-    return { error: err.message }
+    const sid = payload?.session_id
+    if (err.code === 4001 && sid && method !== 'session.resume') {
+      await gateway.call('session.resume', { session_id: sid, cols: 100 })
+      return gateway.call(method, payload)
+    }
+    throw err
   }
-})
+}
 
-ipcMain.handle('runtime:restart', async () => {
+handle('runtime:state', () => ({ ...lastState, logs: logBuffer.slice(-300) }))
+handle('runtime:restart', async () => {
   lastState = { phase: 'restarting' }
   send('runtime:state', lastState)
+  gateway?.close()
+  gateway = null
   await runtime?.stop()
   await startRuntime()
   return lastState
 })
+handle('runtime:health', () => runtime.health())
+handle('runtime:status', () => runtime.api('/api/status'))
 
-ipcMain.handle('open:external', (_event, url) => shell.openExternal(String(url)))
+// 会话 / 对话 / 模型 / 配置 —— 全部走 WS JSON-RPC
+handle('sessions:list', gwCall('session.list'))
+handle('sessions:create', gwCall('session.create'))
+handle('session:activate', gwCall('session.activate'))
+handle('session:resume', gwCall('session.resume'))
+handle('session:history', gwCall('session.history'))
+handle('session:interrupt', gwCall('session.interrupt'))
+handle('session:title', gwCall('session.title'))
+handle('chat:send', gwCall('prompt.submit'))
+handle('models:list', gwCall('model.options'))
+handle('model:set', gwCall('model.set'))
+handle('model:saveKey', gwCall('model.save_key'))
+// 配置走 REST（实测 WS 的 config.get 在空配置下返回 {}；/api/config 是 OpenAPI 里的正式接口）
+handle('config:get', () => runtime.request('GET', '/api/config'))
+handle('config:set', (payload) => runtime.request('PUT', '/api/config', payload?.config ?? payload))
+handle('gateway:capabilities', gwCall('gateway.capabilities'))
+
+handle('open:external', (url) => shell.openExternal(String(url)))
 
 app.whenReady().then(async () => {
   createWindow()
   await startRuntime()
-
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
@@ -102,10 +160,9 @@ app.on('before-quit', async (event) => {
   if (quitting) return
   event.preventDefault()
   quitting = true
+  gateway?.close()
   await runtime?.stop()
   app.quit()
 })
 
-app.on('window-all-closed', () => {
-  app.quit()
-})
+app.on('window-all-closed', () => app.quit())

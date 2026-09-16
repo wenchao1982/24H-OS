@@ -157,11 +157,30 @@ export class Runtime {
 
   /** 带鉴权的请求示例（实测 /api/status 需要它）。 */
   async api(pathname) {
+    return this.request('GET', pathname)
+  }
+
+  /** 通用带鉴权请求（REST）。token 每次调用现取，核心重启后自动跟上。 */
+  async request(method, pathname, body) {
+    if (!this.baseUrl) throw new Error('核心未就绪')
     const token = await this.sessionToken()
     const res = await fetch(`${this.baseUrl}${pathname}`, {
-      headers: token ? { Authorization: `Bearer ${token}` } : {}
+      method,
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(body !== undefined ? { 'Content-Type': 'application/json' } : {})
+      },
+      body: body !== undefined ? JSON.stringify(body) : undefined
     })
-    return { status: res.status, body: await res.json().catch(() => null) }
+    const text = await res.text()
+    let parsed = null
+    try {
+      parsed = text ? JSON.parse(text) : null
+    } catch {
+      parsed = { _raw: text.slice(0, 500) }
+    }
+    if (!res.ok) throw new Error(`${method} ${pathname} → HTTP ${res.status} ${text.slice(0, 200)}`)
+    return parsed
   }
 
   /** 优雅关闭：先 SIGTERM，2 秒后仍在则 SIGKILL。 */

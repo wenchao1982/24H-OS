@@ -1,8 +1,10 @@
 /**
- * 预加载脚本：向渲染进程暴露一个最小、明确的 API 面（contextIsolation 打开，
- * 渲染进程拿不到 Node，只能调这些方法）。
+ * 预加载：只暴露这一组方法给渲染进程（contextIsolation 打开，渲染进程无 Node）。
+ * 所有调用统一返回 {ok, data} | {ok, error}，渲染进程不用 try/catch。
  */
 import { contextBridge, ipcRenderer } from 'electron'
+
+const invoke = (channel) => (payload) => ipcRenderer.invoke(channel, payload)
 
 const on = (channel) => (cb) => {
   const handler = (_event, payload) => cb(payload)
@@ -11,18 +13,38 @@ const on = (channel) => (cb) => {
 }
 
 contextBridge.exposeInMainWorld('hermes', {
-  /** 当前状态快照（含最近的核心日志） */
-  state: () => ipcRenderer.invoke('runtime:state'),
-  /** 健康检查 + /api/status（需要核心就绪） */
-  info: () => ipcRenderer.invoke('runtime:info'),
-  /** 重启核心 */
-  restart: () => ipcRenderer.invoke('runtime:restart'),
-  /** 用系统浏览器打开（例如核心的 /docs） */
-  openExternal: (url) => ipcRenderer.invoke('open:external', url),
-  /** 事件订阅；返回取消订阅函数 */
+  // 运行时（核心进程）
+  state: invoke('runtime:state'),
+  restart: invoke('runtime:restart'),
+  health: invoke('runtime:health'),
+  status: invoke('runtime:status'),
+
+  // 会话与对话（WS JSON-RPC）
+  sessionsList: invoke('sessions:list'),
+  sessionsCreate: invoke('sessions:create'),
+  sessionActivate: invoke('session:activate'),
+  sessionResume: invoke('session:resume'),
+  sessionHistory: invoke('session:history'),
+  sessionInterrupt: invoke('session:interrupt'),
+  sessionTitle: invoke('session:title'),
+  send: invoke('chat:send'),
+
+  // 模型与配置
+  modelsList: invoke('models:list'),
+  modelSet: invoke('model:set'),
+  modelSaveKey: invoke('model:saveKey'),
+  configGet: invoke('config:get'),
+  configSet: invoke('config:set'),
+  capabilities: invoke('gateway:capabilities'),
+
+  openExternal: invoke('open:external'),
+
+  // 事件流
   onReady: on('runtime:ready'),
-  onError: on('runtime:error'),
-  onExit: on('runtime:exit'),
+  onRuntimeError: on('runtime:error'),
+  onRuntimeExit: on('runtime:exit'),
   onLog: on('runtime:log'),
-  onState: on('runtime:state')
+  onState: on('runtime:state'),
+  onGatewayStatus: on('gateway:status'),
+  onEvent: on('gateway:event')
 })

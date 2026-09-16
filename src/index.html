@@ -4,82 +4,84 @@
     <meta charset="utf-8" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'none'; style-src 'unsafe-inline'; script-src 'self'"
+      content="default-src 'none'; style-src 'self'; script-src 'self'"
     />
     <title>24H</title>
-    <style>
-      :root {
-        color-scheme: dark;
-        --bg: #0b0f14;
-        --panel: #121924;
-        --line: #1f2a3a;
-        --fg: #e6edf6;
-        --dim: #8a9bb0;
-        --ok: #3fb950;
-        --warn: #d29922;
-        --err: #f85149;
-      }
-      * { box-sizing: border-box; }
-      body {
-        margin: 0;
-        font: 13px/1.6 -apple-system, "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
-        background: var(--bg);
-        color: var(--fg);
-        display: flex;
-        flex-direction: column;
-        height: 100vh;
-      }
-      header {
-        display: flex;
-        align-items: center;
-        gap: 12px;
-        padding: 14px 18px;
-        border-bottom: 1px solid var(--line);
-      }
-      header .brand { font-weight: 600; letter-spacing: .5px; }
-      header .brand span { color: var(--dim); font-weight: 400; margin-left: 6px; }
-      .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--warn); }
-      .dot.ready { background: var(--ok); }
-      .dot.failed, .dot.exited { background: var(--err); }
-      main { flex: 1; display: grid; grid-template-columns: 320px 1fr; min-height: 0; }
-      .side { border-right: 1px solid var(--line); padding: 16px 18px; overflow: auto; }
-      .row { display: flex; justify-content: space-between; gap: 10px; padding: 6px 0; border-bottom: 1px dashed var(--line); }
-      .row b { font-weight: 500; color: var(--dim); }
-      code { font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
-      button {
-        margin-top: 14px; width: 100%; padding: 8px 10px; cursor: pointer;
-        background: var(--panel); color: var(--fg); border: 1px solid var(--line); border-radius: 6px;
-      }
-      button:hover { border-color: #2d3d52; }
-      button.ghost { margin-top: 8px; }
-      .logs { padding: 12px 16px; overflow: auto; font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
-      .logs div { white-space: pre-wrap; word-break: break-all; color: var(--dim); }
-      .logs div.err { color: #ffb4ae; }
-      .logs div.hi { color: var(--fg); }
-      h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); margin: 18px 0 6px; }
-    </style>
+    <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
     <header>
       <span class="dot" id="dot"></span>
-      <div class="brand">24H<span>desktop shell</span></div>
-      <div style="margin-left:auto"><code id="phase">starting…</code></div>
+      <div class="brand">24H<small>desktop</small></div>
+      <span class="chip" id="core-chip">核心 <code id="core-state">启动中…</code></span>
+      <span class="chip" id="gw-chip" hidden>通道 <code id="gw-state">未连接</code></span>
+      <div class="spacer"></div>
+      <select class="chip" id="model-select" title="模型">
+        <option value="">模型：读取中…</option>
+      </select>
+      <button class="icon" id="btn-logs" title="核心日志">日志</button>
+      <button class="icon" id="btn-settings" title="设置">设置</button>
     </header>
+
     <main>
-      <section class="side">
-        <h2>核心运行时</h2>
-        <div class="row"><b>状态</b><code id="s-phase">-</code></div>
-        <div class="row"><b>端口</b><code id="s-port">-</code></div>
-        <div class="row"><b>地址</b><code id="s-url">-</code></div>
-        <div class="row"><b>版本</b><code id="s-version">-</code></div>
-        <div class="row"><b>健康</b><code id="s-health">-</code></div>
-        <div class="row"><b>鉴权</b><code id="s-auth">-</code></div>
-        <button id="refresh">刷新状态</button>
-        <button id="restart" class="ghost">重启核心</button>
-        <button id="docs" class="ghost">打开核心 API 文档</button>
+      <aside>
+        <div class="side-head">
+          <button class="primary" id="btn-new">新建会话</button>
+          <button id="btn-refresh" title="刷新会话列表">刷新</button>
+        </div>
+        <div class="sessions" id="sessions"></div>
+      </aside>
+
+      <section class="chat">
+        <div class="thread" id="thread"></div>
+        <div class="composer">
+          <div class="box">
+            <textarea id="input" placeholder="输入消息…（Enter 发送，Shift+Enter 换行）"></textarea>
+            <div class="row">
+              <button class="primary" id="btn-send">发送</button>
+              <button id="btn-stop" hidden>停止</button>
+              <span id="turn-state"></span>
+              <span class="spacer"></span>
+              <span id="session-label"></span>
+            </div>
+          </div>
+        </div>
+        <div class="drawer" id="drawer" hidden></div>
       </section>
-      <section class="logs" id="logs"></section>
     </main>
+
+    <div class="modal" id="settings" hidden>
+      <div class="card">
+        <h2>设置</h2>
+        <div class="field">
+          <label>服务商</label>
+          <select id="set-provider"></select>
+          <div class="hint" id="provider-hint">从核心读取的可用服务商；带「当前」标记的是正在使用的。</div>
+        </div>
+        <div class="field">
+          <label>API Key</label>
+          <input id="set-key" type="password" placeholder="粘贴该服务商的 API Key（保存进核心配置）" />
+          <div class="hint">保存后写进核心配置，壳不落盘、不回显。</div>
+        </div>
+        <div class="field">
+          <label>默认模型</label>
+          <input id="set-model" placeholder="例如 z-ai/glm-5.2、deepseek-chat…" />
+          <div class="hint">留空则用服务商默认模型。</div>
+        </div>
+        <div class="field">
+          <label>运行信息</label>
+          <div id="run-info"></div>
+        </div>
+        <div class="row" style="display: flex; gap: 10px; margin-top: 14px">
+          <button class="primary" id="btn-save-settings">保存</button>
+          <button id="btn-close-settings">关闭</button>
+          <span class="spacer"></span>
+          <button id="btn-restart-core" title="重启核心进程">重启核心</button>
+        </div>
+        <div class="hint" id="settings-status"></div>
+      </div>
+    </div>
+
     <script src="./renderer.js"></script>
   </body>
 </html>
