@@ -5,6 +5,11 @@ Electron 桌面壳，后端使用 [Hermes Agent](https://github.com/NousResearch
 
 - 许可：**Business Source License 1.1**（见 `LICENSE`）；运行时依赖归属见 `NOTICE`。
 
+## 文档
+
+- **[`docs/PLAN.md`](docs/PLAN.md) — 24H-OS 制作方案 v1**：上游 Hermes Desktop / Ekko Studio 桌面版架构解读 + 本产品的分层、分发、功能、里程碑（每条结论都带 `路径:行号` 出处）
+- [`docs/WINDOWS.md`](docs/WINDOWS.md) — 在 Windows 上跑起来 / 出安装包
+
 ## 目录
 
 ```
