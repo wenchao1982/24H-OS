@@ -25,7 +25,7 @@ scripts/ui-smoke.mjs  界面层冒烟（无头浏览器真渲染 index.html）
 scripts/after-pack.mjs / verify-package.mjs   打包时与打包后的自检
 scripts/gen-contract.mjs      从核心抓契约快照 → electron/contract.generated.json
 scripts/make-icons.py         从 build/icon.png 生成 build/icon.ico
-.github/workflows/ci.yml       CI：静态护栏 + 契约比对 + 界面层冒烟
+docs/ci/ci.yml                 CI 模板（静态护栏 + 契约比对 + 界面层冒烟）；启用时复制到 .github/workflows/
 ```
 
 ## 功能

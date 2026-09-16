@@ -39,7 +39,7 @@
 | 打包自检读清单并核对（缺字段给告警） | ✅ | `afterPack` + `npm run verify:package`（本机实跑通过） |
 | 契约快照与比对（防方法/事件名写错） | ✅ | `scripts/gen-contract.mjs` → `electron/contract.generated.json`（217 方法/69 事件）；`smoke --static` 12→13 条护栏 |
 | 运行时回退（新运行时起不来就退回 `runtime.prev`） | ✅ | 实验：坏的 `runtime` + 好的 `runtime.prev` → 壳成功回退启动 |
-| CI（静态护栏 + 契约比对 + 无头界面冒烟） | ✅ | `.github/workflows/ci.yml`（两个 job） |
+| CI（静态护栏 + 契约比对 + 无头界面冒烟） | ✅（模板就绪） | `docs/ci/ci.yml` 两个 job；启用需复制到 `.github/workflows/`（并给 PAT 加 Workflows 权限，否则 GitHub 对该路径回 403） |
 | 壳自更新（electron-updater） | 🟡 已接线 | `electron-updater` 进 dependencies；没配更新源时"检查更新"给人话；**差** `build.publish` 指向分发源 |
 | 核心独立升级（运行时资产化：下载 + sha256 + 清单校验） | ⬜ 未开工 | 需要先有分发源 |
 
