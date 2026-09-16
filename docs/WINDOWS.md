@@ -198,8 +198,33 @@ npm run icons                       # 从 build\icon.png 重新生成 build\icon
 
 ### 3.2 代码签名（用户不看到"未知发布者"的前提）
 
-拿证书：国内可用沃通/天威诚信的 OV 代码签名证书，或直接用微软 **Azure Trusted Signing**
-（不用自己管 .pfx，适合 CI）。**没有签名，用户第一次装包一定会看到 SmartScreen 拦截。**
+**是什么**：一张由 CA（证书颁发机构）签发、绑定了**你公司身份**的数字证书。用它给你的 `.exe` 签名后：
+① 用户在 Windows 上看到的是你的公司名，而不是"未知发布者"；
+② 文件被改过一个字节，签名就失效（防篡改）。
+**不买会怎样**：用户首次运行安装包会被 SmartScreen 蓝屏拦住（"Windows 已保护你的电脑"），
+国内 360/腾讯管家也会额外弹窗；很多人到这一步就放弃了。
+
+三条可选路线：
+
+| 路线 | 主体要求 | 价格（量级） | 体验 | 适合 |
+|---|---|---|---|---|
+| **EV 代码签名证书**（国内 CA：沃通 WoSign、天威诚信、上海 CA / 国外 Sectigo、DigiCert） | 企业 | ¥4000+/年，含硬件 UKey | **立刻有 SmartScreen 信誉**，一上来就不拦 | 要发正式版、面向陌生用户 |
+| **OV 代码签名证书** | 企业 | ¥1000–4000/年 | 信誉靠下载量慢慢积累，前期仍可能被拦 | 预算有限、有耐心 |
+| **Azure Trusted Signing**（微软自家云签名） | 企业/个人开发者，需 Azure 订阅 + 身份验证 | 约 $9.99/月起，按签名次数 | 无需 UKey、**最适合 CI**；国内需能访问 Azure | 想省掉硬件与运维 |
+
+**要准备的材料**（CA 会电话核实，用企业邮箱留联系方式）：营业执照、法人身份证、经办人身份证与授权、
+公司公章、公司英文名（证书主题里要用）、能接电话的座机/手机。办理周期一般 3–7 个工作日。
+
+**办完怎么用**（.pfx 路线；Azure 路线填 `build.win.azureSignOptions` 后 `az login` 即可）：
+
+```powershell
+$env:WIN_CSC_LINK = "C:\path\to\cert.pfx"   # 证书别进仓库、别进聊天记录
+$env:WIN_CSC_KEY_PASSWORD = "口令"
+npm run dist
+Get-AuthenticodeSignature .\release\24H-0.1.0-x64.exe | Format-List Status, SignerCertificate   # Status 期望 Valid
+```
+
+**暂时不买也能推进**：内测阶段直接出未签名包，用户点"更多信息 → 仍要运行"即可；等要公开发布再买。
 
 配置已经写好（`package.json` 的 `build.win.signtoolOptions`：sha256 + RFC3161 时间戳），
 证书本身**走环境变量，不要写进仓库**：
