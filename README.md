@@ -170,6 +170,9 @@ npm run probe              # 更轻量：只验证核心启动 + 健康检查 + 
 npm run ui-smoke           # 界面层：用 chrome-headless-shell 打开 src/index.html，验导航/面板/命令面板/设置分节
 npm run verify:package     # 打包后：asar / 随包运行时能不能真的跑起来 / 安装包名字与 sha256
 npm run verify:runtime     # 运行时体检：清单（版本/commit/源码树指纹）与目录里实际是否一致
+npm run package:runtime    # 把 runtime/ 打成可分发资产（→ dist-assets/<平台>/：tar.gz + sha256 + 清单）
+node scripts/dev/runtime-download-test.mjs            # 本机验证资产化链路（下载→校验→解压→落地→能跑）
+node scripts/dev/runtime-download-test.mjs --base <分发源地址>   # 对着真实分发源跑同一套验证
 node scripts/gen-contract.mjs     # 重新抓核心契约（升级核心后跑一次）
 node scripts/contract-probe.mjs   # 契约体检：核心到底给我们开放了哪些方法（含账号/计费）
 ```
