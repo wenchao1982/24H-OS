@@ -115,7 +115,11 @@ if (!installers.length) {
     if (f.toLowerCase().endsWith('.exe') && !f.startsWith(expected)) {
       fail(`安装包名字不符合 artifactName 约定（期望以 ${expected} 开头）：${f}`)
     }
-    if (size < 20 * 1024 * 1024) warn(`${f} 只有 ${(size / 1024 / 1024).toFixed(1)} MB —— 随包运行时是不是没进去？`)
+    if (size < 1024 * 1024) {
+      fail(`${f} 只有 ${(size / 1024).toFixed(0)} KB —— 这不像一个安装包（多半是上一次打包失败的残留）。删掉 release/ 后重跑 npm run dist`)
+    } else if (size < 20 * 1024 * 1024) {
+      warn(`${f} 只有 ${(size / 1024 / 1024).toFixed(1)} MB —— 随包运行时是不是没进去？`)
+    }
   }
 }
 

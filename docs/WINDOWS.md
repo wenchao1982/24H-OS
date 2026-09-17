@@ -178,9 +178,14 @@ node .\node_modules\electron\install.js
 
 ```powershell
 # 前提：第二步的 runtime\ 已构建好（安装包会把它一起打包进去）
-npm run dist            # = electron-builder --win nsis → release\24H-0.1.0-x64.exe
+npm run dist            # 包装脚本：自动把 electron-builder 的二进制指到国内镜像，然后 --win nsis
 npm run verify:package  # 产物体检：asar / 随包运行时 / 安装包名字与 sha256
 ```
+
+> **国内网络必读**：electron-builder 首次打 Windows 包会去 GitHub Releases 下 `winCodeSign` 与 `nsis`
+> 两个二进制包，直连基本会卡住。`npm run dist` 已经替你设好
+> `ELECTRON_BUILDER_BINARIES_MIRROR=https://registry.npmmirror.com/-/binary/electron-builder-binaries/`
+> （实测镜像上有这两个包）；要临时走官方源就 `$env:SKIP_MIRROR = "1"` 再跑。
 
 产物在 `release\`。打包过程有**两道自动检查**（不通过直接报错，不会静默出一个坏包）：
 
