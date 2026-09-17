@@ -278,10 +278,18 @@ handle('runtime:list', () => {
   for (const item of listInstalledRuntimes(runtimesRoot())) {
     candidates.push({ ...item, usable: true })
   }
-  return { active, pinned: readPrefs().runtimeDir ?? null, distUrl: readPrefs().runtimeDistUrl ?? '', candidates }
+  return { active, pinned: readPrefs().runtimeDir ?? null, distUrl: distUrl(), candidates }
 })
 /** 下载版运行时的落点（userData/runtimes）—— 安装包目录是只读的，下载的东西只能放用户数据里 */
 const runtimesRoot = () => path.join(app.getPath('userData'), 'runtimes')
+
+/** 出厂默认分发源（可在设置里改；设空字符串即表示"不预置"） */
+const DEFAULT_DIST_URL = process.env.HERMES_DIST_URL || 'http://111.229.225.8:8899'
+
+const distUrl = () => {
+  const prefs = readPrefs()
+  return typeof prefs.runtimeDistUrl === 'string' ? prefs.runtimeDistUrl : DEFAULT_DIST_URL
+}
 
 handle('runtime:dist', (payload) => {
   const prefs = readPrefs()
@@ -291,11 +299,11 @@ handle('runtime:dist', (payload) => {
     fs.writeFileSync(prefsFile(), JSON.stringify(next, null, 2) + '\n', 'utf8')
     return { url: next.runtimeDistUrl }
   }
-  return { url: prefs.runtimeDistUrl ?? '', installed: listInstalledRuntimes(runtimesRoot()) }
+  return { url: distUrl(), installed: listInstalledRuntimes(runtimesRoot()), defaultUrl: DEFAULT_DIST_URL }
 })
 
 handle('runtime:checkUpdate', async () => {
-  const { url } = { url: readPrefs().runtimeDistUrl ?? '' }
+  const url = distUrl()
   if (!url) return { configured: false, message: '还没配置分发源地址（填一个 http(s) 前缀，例如 http://your-host/24h-dist）' }
   try {
     const manifest = await fetchDistManifest(url)
@@ -324,7 +332,7 @@ handle('runtime:checkUpdate', async () => {
 })
 
 handle('runtime:install', async () => {
-  const url = readPrefs().runtimeDistUrl ?? ''
+  const url = distUrl()
   if (!url) throw new Error('还没配置分发源地址')
   const result = await installRuntimeAsset({
     baseUrl: url,

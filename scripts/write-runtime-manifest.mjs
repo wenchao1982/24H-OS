@@ -41,7 +41,8 @@ if (allowNetwork) {
     })
     if (res.ok) coreCommit = (await res.json())?.sha ?? ''
   } catch {
-    console.log('    （取上游 commit 失败，清单里留空）')
+    console.log('    （取上游 commit 失败，清单里留空 —— 不影响使用：运行时身份靠 coreTreeSha256；' +
+      '网络可达时重跑 `npm run manifest` 就能补上）')
   }
 }
 
