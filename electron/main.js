@@ -8,6 +8,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { callWithSessionRemap } from './session-remap.mjs'
 import { fetchDistManifest, installRuntimeAsset, listInstalledRuntimes } from './runtime-download.mjs'
+import { sweepOrphanCores } from './orphan-sweep.mjs'
 import { Gateway } from './gateway.js'
 import { Runtime } from './runtime.js'
 
@@ -74,6 +75,10 @@ function bootProgress(stage, message) {
 }
 
 async function startRuntime() {
+  // 先回收上次被强杀（崩溃/任务管理器结束进程）留下的孤儿核心：否则它会占着端口与内存，
+  // 用户下次打开可能连到"上一世"的核心上。只清理父进程已死、存活超过 60s 的核心形态进程。
+  const swept = sweepOrphanCores({ log: (m) => pushLog(m, 'shell') })
+  if (swept.killed.length) pushLog(`[壳] 启动前回收了 ${swept.killed.length} 个孤儿核心`, 'shell')
   runtime = new Runtime({
     appRoot: app.getAppPath(),
     resourcesPath: process.resourcesPath,

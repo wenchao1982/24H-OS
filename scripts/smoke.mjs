@@ -108,6 +108,9 @@ const check = (name, ok, detail = '') => {
   const updaterDep = Boolean(pkgJson.dependencies?.['electron-updater'])
   check('壳自更新依赖已声明（electron-updater）', updaterDep, updaterDep ? '在 dependencies 里' : 'package.json 的 dependencies 缺 electron-updater')
 
+  const sweepOk = existsSync(path.join(root, 'electron', 'orphan-sweep.mjs')) && /sweepOrphanCores\(/.test(mainJs)
+  check('启动前会回收孤儿核心（壳被强杀后的残留）', sweepOk, sweepOk ? 'orphan-sweep.mjs 已被调用' : '缺 orphan-sweep 或 main.js 未调用')
+
   const catalogOk = /include_unconfigured=1/.test(mainJs)
   check('模型目录带 include_unconfigured=1（否则只能看到虚拟 provider）', catalogOk, catalogOk ? '已带' : '缺：设置页会列出 moa 这类不能填 key 的项')
 }
