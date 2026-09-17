@@ -61,9 +61,9 @@
 | 4 | 签名配置（`build.win.signtoolOptions`，证书走环境变量） | 我 | ✅ 配置就位 |
 | 5 | 打包自检（`afterPack` 钩子 + `npm run verify:package`） | 我 | ✅ 本机 Linux 解包产物实测 |
 | 6 | **签名证书**（OV 证书或 Azure Trusted Signing） | 你 | 🟡 **内测阶段暂缓**（2026-09-16 决定：先不买，出未签名包给内测用户，用户点「更多信息 - 仍要运行」即可；正式对外发布前再办） |
-| 7 | `build-runtime.ps1` 在 Windows 上首次跑通 | **你（机器）** | ⬜ 阻塞 8–10 |
-| 8 | Windows：`npm run smoke` 38/38 | **你（机器）** | ⬜ |
-| 9 | Windows：`npm run dev` 界面可用（设置开关 / 填 DeepSeek key / 发消息） | **你（机器）** | ⬜ |
+| 7 | `build-runtime.ps1` 在 Windows 上首次跑通 | 你 | ✅ **2026-09-17 跑通**（并产出了 win-x64 运行时资产） |
+| 8 | Windows：`npm run smoke` | 你 | ✅ 已跑通（45/45） |
+| 9 | Windows：`npm run dev` 界面可用（设置开关 / 填 DeepSeek key / 发消息） | 你 | ✅ 已跑通（截图确认） |
 | 10 | Windows：`npm run dist` 出 NSIS（内测不签名）+ `npm run verify:package` + 装包首启验收 | **你（机器）** | ⬜ 只需第 7 项（运行时构建） |
 
 ## 4. 排期（按日，遇阻顺延）
@@ -89,6 +89,15 @@
 | 上游核心升级（0.21.x → 更高） | 我 | 契约版本会变（`desktop_contract` 已是 6→7），升级后要跑全量冒烟 |
 
 ## 6. 变更记录
+
+- 2026-09-17（第九次）：**运行时升级链路全线打通**（用户侧构建 + 上传 + 我方校验 + 自启运维 + CI 体检）。
+  · 用户在 Windows 上首次跑通 `build-runtime.ps1`，产出 win-x64 资产（106MB）并上传到分发源；
+  · 我方从公网完整校验 4/4：清单/平台 → 下载 106MB + sha256 → 包内结构（venv\Scripts\python.exe + core） → 包内清单一致；
+  · 新增 `scripts/dev/serve-dist-ctl.sh` + crontab（`@reboot` 自启 + 每 5 分钟自愈），
+    并用"最小环境（模拟 cron）"实测能起、公网仍 200；
+  · 新增 `npm run check:dist`（清单/校验值/HEAD 大小，不下载大文件）→ 本机 6/6，并入 CI 作为非阻塞 job；
+  · 壳里预置默认分发源（可在设置里改）；同版本支持"重新下载安装"（修复用）。
+  · 唯一小瑕疵：Windows 侧清单里 `coreCommit` 为空（取上游 commit 的网络步骤没成功），不影响使用。
 
 - 2026-09-16（第八次）：**公网分发源打通**。用户在服务器上加好 frp 代理（8899 端口）；
   NAS 侧起静态分发服务（`scripts/dev/serve-dist.mjs`，只读 + 防路径穿越，`setsid` 后台常驻），资产按平台分目录。

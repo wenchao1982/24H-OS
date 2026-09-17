@@ -49,3 +49,17 @@ jobs:
           unzip -q /tmp/hs.zip -d /tmp/chrome
       - name: 界面层冒烟
         run: CHROME=/tmp/chrome/chrome-headless-shell-linux64/chrome-headless-shell node scripts/ui-smoke.mjs
+
+  # 分发源体检：只读清单/校验值/HEAD 大小，不下载大文件。
+  # 依赖的是外部的 VPS（可能临时不可用），所以 continue-on-error —— 挂了会亮黄牌但不会让 CI 变红。
+  dist:
+    name: 分发源体检（非阻塞）
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: 检查分发源上的运行时资产
+        run: node scripts/dev/check-dist.mjs --base ${{ vars.DIST_URL || 'http://111.229.225.8:8899' }}
