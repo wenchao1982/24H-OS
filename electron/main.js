@@ -300,16 +300,24 @@ handle('runtime:checkUpdate', async () => {
   try {
     const manifest = await fetchDistManifest(url)
     const installed = listInstalledRuntimes(runtimesRoot()).map((r) => r.coreVersion)
-    const activeVersion = runtime?._resolved?.root ? undefined : undefined
-    return {
-      configured: true,
-      available: !installed.includes(manifest.coreVersion),
-      manifest,
-      installed,
-      message: installed.includes(manifest.coreVersion)
-        ? `版本 ${manifest.coreVersion} 已经装过了`
-        : `可安装 ${manifest.coreVersion}（${(Number(manifest.size || 0) / 1024 / 1024).toFixed(0)} MB）`
+    // 当前正在跑的运行时版本（随包那份），用来把话说清楚：是"有新版本"还是"同版本可修复"
+    let activeVersion = null
+    try {
+      const manifestPath = path.join(runtime?._resolved?.root ?? '', '.24h-os-runtime.json')
+      activeVersion = JSON.parse(fs.readFileSync(manifestPath, 'utf8')).coreVersion ?? null
+    } catch {
+      activeVersion = null
     }
+    const sizeMb = (Number(manifest.size || 0) / 1024 / 1024).toFixed(0)
+    let message
+    if (installed.includes(manifest.coreVersion)) {
+      message = `已下载过 ${manifest.coreVersion}（可重新下载用于修复）`
+    } else if (activeVersion && activeVersion === manifest.coreVersion) {
+      message = `分发源版本 ${manifest.coreVersion} 与当前运行的一致（可下载一份独立副本，或用于修复）`
+    } else {
+      message = `可安装 ${manifest.coreVersion}（${sizeMb} MB）${activeVersion ? `，当前是 ${activeVersion}` : ''}`
+    }
+    return { configured: true, available: !installed.includes(manifest.coreVersion), manifest, installed, activeVersion, message }
   } catch (err) {
     return { configured: true, error: err.message }
   }

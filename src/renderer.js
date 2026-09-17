@@ -1517,6 +1517,8 @@ async function checkRuntimeUpdate() {
     return null
   }
   st.textContent = (d.message ?? '') + (d.installed?.length ? `（已下载：${d.installed.join(', ')}）` : '')
+  // 同版本也允许"重新下载安装"（用于修复），所以按钮不禁用，只把话说清楚
+  $('btn-runtime-install').textContent = d.available ? '下载并安装' : '重新下载安装'
   return d
 }
 
