@@ -3,17 +3,15 @@
  *
  * 分工：主进程持有 python 子进程与 WebSocket，渲染进程只通过 IPC 调方法、收事件。
  *
- * 模块化（Sprint-01 后半段）：
+ * 模块化：
  *   - lifecycle.mjs：窗口创建 + 关窗拦截 + 退出流程
  *   - ipc-handlers.mjs：所有 IPC 通道注册
  *   - orphan-watchdog.mjs：周期性孤儿核心清理
  *   - provider-config.mjs：可配置的服务商白名单
  */
-import { BrowserWindow, Menu, Notification, app, clipboard, dialog, ipcMain, shell } from 'electron'
-import fs from 'node:fs'
+import { BrowserWindow, Notification, app } from 'electron'
 import path from 'node:path'
 import { callWithSessionRemap } from './session-remap.mjs'
-import { fetchDistManifest, installRuntimeAsset, listInstalledRuntimes } from './runtime-download.mjs'
 import { sweepOrphanCores } from './orphan-sweep.mjs'
 import { CloseGuard } from './close-guard.mjs'
 import { CoreSupervisor } from './core-supervisor.mjs'
@@ -30,7 +28,7 @@ import {
   selfCheck
 } from './wizard.mjs'
 import { createOrphanWatchdog } from './orphan-watchdog.mjs'
-import { loadProviderConfig, providerMatchesAllowlist, filterKeyProviders } from './provider-config.mjs'
+import { loadProviderConfig } from './provider-config.mjs'
 import { registerIpcHandlers } from './ipc-handlers.mjs'
 
 /** @type {BrowserWindow | null} */
@@ -205,23 +203,6 @@ async function restoreLastSession(sessionId = null) {
     pushLog(`[壳] 恢复上次会话失败：${err.message}`, 'shell')
     return { sessionId: wanted, restoredAs: null, error: err.message }
   }
-}
-
-/** 首启门禁（双层里的后端那层）：向导没走完时不许开正常的会话。 */
-function assertFlowAllowed(kind, payload = {}) {
-  const decision = decideFlowGate({ data: readPrefs(), kind, payload, inProgress: wizardSelfCheckRan })
-  if (decision.allowed) {
-    if (decision.reason === 'grandfathered-legacy-install') {
-      // 老用户（这个功能之前就正常用过）不强制重走向导，否则升级即"不能用"
-      prefs().markWizardComplete({ connection: { provider: null, model: null, source: 'legacy-grandfather' } })
-      prefs().flush()
-      pushLog('[壳] 检测到历史会话记录：视作已完成首启向导', 'shell')
-    }
-    return decision
-  }
-  const err = new Error(`首启向导未完成（${decision.reason}）：不能进入主流程`)
-  err.code = 'EWIZARD_INCOMPLETE'
-  throw err
 }
 
 function createWindow() {
