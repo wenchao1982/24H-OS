@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; img-src data: blob:; connect-src 'self' ws: wss: http: https:"
+    />
+    <title>24H - Web</title>
+    <link rel="stylesheet" href="./styles.css" />
+    <style>
+      /* Web 模式特有的连接对话框 */
+      .connect-dialog {
+        position: fixed; inset: 0; z-index: 10000;
+        display: flex; align-items: center; justify-content: center;
+        background: rgba(0,0,0,0.8);
+      }
+      .connect-dialog.hidden { display: none; }
+      .connect-card {
+        background: #1a1a1a; border: 1px solid #333; border-radius: 12px;
+        padding: 24px; width: 400px; max-width: 90vw;
+      }
+      .connect-card h2 { margin: 0 0 16px; font-size: 18px; color: #eee; }
+      .connect-card .field { margin-bottom: 12px; }
+      .connect-card label { display: block; margin-bottom: 4px; font-size: 12px; color: #999; }
+      .connect-card input {
+        width: 100%; padding: 8px 12px; border: 1px solid #444; border-radius: 6px;
+        background: #0d0d0d; color: #eee; font-size: 14px; box-sizing: border-box;
+      }
+      .connect-card input:focus { border-color: #666; outline: none; }
+      .connect-card .actions { margin-top: 16px; display: flex; gap: 8px; }
+      .connect-card button {
+        flex: 1; padding: 8px; border: none; border-radius: 6px;
+        cursor: pointer; font-size: 14px;
+      }
+      .connect-card .primary { background: #2563eb; color: white; }
+      .connect-card .primary:hover { background: #1d4ed8; }
+      .connect-card .secondary { background: #333; color: #eee; }
+      .connect-card .secondary:hover { background: #444; }
+      .connect-card .error { color: #f44; font-size: 12px; margin-top: 8px; }
+      .connect-card .hint { color: #666; font-size: 11px; margin-top: 4px; }
+    </style>
+  </head>
+  <body>
+    <!-- Web 模式连接对话框 -->
+    <div class="connect-dialog" id="connect-dialog">
+      <div class="connect-card">
+        <h2>连接到 24H 核心</h2>
+        <div class="field">
+          <label for="core-url">核心地址</label>
+          <input id="core-url" placeholder="http://192.168.1.100:8080" />
+          <div class="hint">核心的 HTTP 地址（运行 hermes serve 的机器）</div>
+        </div>
+        <div class="field">
+          <label for="core-token">Token（可选）</label>
+          <input id="core-token" type="password" placeholder="留空自动获取" />
+          <div class="hint">从核心的 / 页面自动获取；如需手动输入，从浏览器开发者工具里复制</div>
+        </div>
+        <div class="error" id="connect-error" hidden></div>
+        <div class="actions">
+          <button class="secondary" onclick="window.location.reload()">取消</button>
+          <button class="primary" id="btn-connect">连接</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 以下与 index.html 相同 -->
+    <header>
+      <div class="brand">24H<small>WEB</small></div>
+      <div class="sep"></div>
+      <span class="dot" id="dot" title="核心状态"></span>
+      <span class="chip" id="core-chip">核心<code id="core-state">连接中</code></span>
+      <span class="chip" id="gw-chip" hidden>通道<code id="gw-state">未连接</code></span>
+
+      <div class="spacer"></div>
+
+      <button class="icon" id="btn-palette" title="命令面板（Ctrl/Cmd + K）">⌘K 命令</button>
+      <select class="chip" id="model-select" title="默认模型">
+        <option value="">模型：读取中…</option>
+      </select>
+      <button class="icon" id="btn-panel" title="右侧面板（文件 / 预览 / 日志）">面板</button>
+      <button class="icon" id="btn-theme" title="切换深色 / 浅色">外观</button>
+      <button class="icon" id="btn-settings" title="设置">设置</button>
+    </header>
+
+    <main id="shell" data-view="chat">
+      <nav class="rail" id="rail">
+        <button class="rail-btn active" id="nav-chat" data-view="chat" title="对话">对话</button>
+        <button class="rail-btn" id="nav-skills" data-view="skills" title="技能">技能</button>
+        <button class="rail-btn" id="nav-tasks" data-view="tasks" title="任务">任务</button>
+        <button class="rail-btn" id="nav-usage" data-view="usage" title="用量">用量</button>
+        <button class="rail-btn rail-btn-end" id="nav-settings" title="设置">设置</button>
+      </nav>
+
+      <aside class="side" id="side">
+        <div class="side-head">
+          <button class="primary" id="btn-new">新建会话</button>
+          <button class="icon" id="btn-refresh" title="刷新会话列表">刷新</button>
+        </div>
+        <div class="side-search">
+          <input id="search" placeholder="搜索会话…" />
+        </div>
+        <div class="side-drafts" id="drafts-section" hidden>
+          <div class="drafts-head">
+            <span class="t">草稿箱</span>
+            <span class="count" id="drafts-count">0</span>
+          </div>
+          <div class="drafts" id="drafts-list"></div>
+        </div>
+        <div class="sessions" id="sessions"></div>
+      </aside>
+
+      <section class="chat" id="chat-view">
+        <div class="banner" id="banner" hidden></div>
+        <div class="thread" id="thread"></div>
+        <div class="composer">
+          <div class="box">
+            <textarea id="input" placeholder="输入消息…（Enter 发送，Shift+Enter 换行，Ctrl/Cmd+K 命令面板）"></textarea>
+            <div class="row">
+              <button class="primary" id="btn-send">发送</button>
+              <button class="danger" id="btn-stop" hidden>停止生成</button>
+              <span id="turn-state"></span>
+              <span class="spacer"></span>
+              <span id="context-usage" title="本轮上下文用量"></span>
+              <span id="session-label"></span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="page" id="page-skills" hidden>
+        <div class="page-head"><h2>技能</h2><span class="hint" id="skills-summary"></span></div>
+        <div class="page-body" id="skills-body"></div>
+      </section>
+      <section class="page" id="page-tasks" hidden>
+        <div class="page-head"><h2>定时任务</h2><span class="hint" id="tasks-summary"></span></div>
+        <div class="page-body" id="tasks-body"></div>
+      </section>
+      <section class="page" id="page-usage" hidden>
+        <div class="page-head"><h2>用量</h2><span class="hint" id="usage-summary"></span></div>
+        <div class="page-body" id="usage-body"></div>
+      </section>
+
+      <aside class="panel" id="panel" hidden>
+        <div class="panel-tabs">
+          <button class="tab active" id="tab-files" data-tab="files">文件</button>
+          <button class="tab" id="tab-preview" data-tab="preview">预览</button>
+          <button class="tab" id="tab-logs" data-tab="logs">日志</button>
+          <span class="spacer"></span>
+          <button class="icon" id="btn-panel-close" title="收起面板">✕</button>
+        </div>
+        <div class="panel-tab" id="pane-files">
+          <div class="side-head">
+            <span id="files-path" class="path">—</span>
+          </div>
+          <div class="entries" id="entries"></div>
+        </div>
+        <div class="panel-tab" id="pane-preview" hidden>
+          <div class="preview" id="preview">选中左侧文件即可预览</div>
+        </div>
+        <div class="panel-tab" id="pane-logs" hidden>
+          <div class="drawer" id="drawer"></div>
+        </div>
+      </aside>
+    </main>
+
+    <!-- 命令面板 / 设置 / 向导 / 输入保护 与 index.html 相同，此处省略以节省篇幅 -->
+    <!-- 它们在 renderer.js 里按 ID 查找，有则用、没有不影响核心功能 -->
+
+    <script type="module">
+      /**
+       * Web 版入口：检测环境，加载适配层，然后复用 renderer.js 的全部逻辑。
+       */
+      import { getTransport, isWeb } from './transport-adaptor.js'
+
+      // 如果是 Web 环境，先显示连接对话框
+      if (isWeb()) {
+        const dialog = document.getElementById('connect-dialog')
+        const errorEl = document.getElementById('connect-error')
+        const btnConnect = document.getElementById('btn-connect')
+
+        // 检查是否有保存的地址
+        const savedUrl = localStorage.getItem('hermes-core-url')
+        if (savedUrl) document.getElementById('core-url').value = savedUrl
+
+        btnConnect.addEventListener('click', async () => {
+          const url = document.getElementById('core-url').value.trim()
+          const token = document.getElementById('core-token').value.trim() || null
+          if (!url) { errorEl.textContent = '请输入核心地址'; errorEl.hidden = false; return }
+
+          errorEl.hidden = true
+          btnConnect.disabled = true
+          btnConnect.textContent = '连接中…'
+
+          try {
+            const transport = await getTransport({ forceWeb: true, coreUrl: url, token })
+            // 连接成功：隐藏对话框，注入 transport，加载 renderer
+            dialog.classList.add('hidden')
+            window.hermes = transport
+            // 动态加载 renderer.js
+            const script = document.createElement('script')
+            script.src = './renderer.js'
+            document.body.appendChild(script)
+          } catch (err) {
+            errorEl.textContent = `连接失败：${err.message}`
+            errorEl.hidden = false
+            btnConnect.disabled = false
+            btnConnect.textContent = '连接'
+          }
+        })
+
+        // 回车连接
+        document.getElementById('core-url').addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') btnConnect.click()
+        })
+      } else {
+        // Electron 环境：直接加载 renderer.js
+        const script = document.createElement('script')
+        script.src = './renderer.js'
+        document.body.appendChild(script)
+      }
+    </script>
+  </body>
+</html>

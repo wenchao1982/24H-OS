@@ -3,5 +3,6 @@ dist/
 out/
 release/
 runtime/
+dist-assets/
 *.log
 .DS_Store
