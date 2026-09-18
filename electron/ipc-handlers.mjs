@@ -12,6 +12,7 @@ import path from 'node:path'
 import { callWithSessionRemap } from './session-remap.mjs'
 import { fetchDistManifest, installRuntimeAsset, listInstalledRuntimes } from './runtime-download.mjs'
 import { Runtime } from './runtime.js'
+import { SWITCH_MUX_KEY } from './session-mutex.mjs'
 
 /** 统一包装：IPC 调用里的异常变成 {error} 而不是抛穿进程边界。 */
 function handle(channel, fn) {
@@ -55,6 +56,7 @@ function handle(channel, fn) {
  *   sanitizePrefsPatch: (patch: any) => any,
  *   assertWizardCompleteAllowed: (opts: any) => void,
  *   decideFlowGate: (opts: any) => any,
+ *   sessionMux: import('./session-mutex.mjs').KeyedSerializer,
  * }} ctx
  */
 export function registerIpcHandlers(ctx) {
@@ -84,7 +86,8 @@ export function registerIpcHandlers(ctx) {
     runConnectionTestWithPrefs,
     sanitizePrefsPatch,
     assertWizardCompleteAllowed,
-    decideFlowGate
+    decideFlowGate,
+    sessionMux
   } = ctx
 
   // ── 需要 gateway 就绪的调用 ────────────────────────────────────────────────
@@ -96,6 +99,13 @@ export function registerIpcHandlers(ctx) {
     })
     rememberSession(method, payload, result)
     return result
+  }
+
+  // ── 会话切换/关闭/发送互斥：同一会话串行 + 全局切换 mux ──────────────────
+  const serialized = (method) => async (payload = {}) => {
+    const sid = payload?.session_id ? `session:${payload.session_id}` : null
+    const task = () => gwCall(method)(payload)
+    return sid ? sessionMux.runAll([SWITCH_MUX_KEY, sid], task) : sessionMux.run(SWITCH_MUX_KEY, task)
   }
 
   // ── 会话互斥（import 由 main.js 负责，这里只用） ──
@@ -130,19 +140,8 @@ export function registerIpcHandlers(ctx) {
     return gwCall('session.create')(params)
   })
 
-  handle('session:activate', async (payload = {}) => {
-    const gw = getGateway()
-    if (!gw) throw new Error('核心尚未就绪')
-    const task = () => gwCall('session.activate')(payload)
-    return task()
-  })
-
-  handle('session:resume', async (payload = {}) => {
-    const gw = getGateway()
-    if (!gw) throw new Error('核心尚未就绪')
-    const task = () => gwCall('session.resume')(payload)
-    return task()
-  })
+  handle('session:activate', serialized('session.activate'))
+  handle('session:resume', serialized('session.resume'))
 
   handle('session:history', gwCall('session.history'))
   handle('session:interrupt', gwCall('session.interrupt'))
@@ -150,12 +149,7 @@ export function registerIpcHandlers(ctx) {
   handle('session:status', gwCall('session.status'))
   handle('session:title', gwCall('session.title'))
 
-  handle('chat:send', async (payload = {}) => {
-    const gw = getGateway()
-    if (!gw) throw new Error('核心尚未就绪')
-    const task = () => gwCall('prompt.submit')(payload)
-    return task()
-  })
+  handle('chat:send', serialized('prompt.submit'))
 
   // ── 模型与服务商 ────────────────────────────────────────────────────────────
   handle('models:list', () => getRuntime()?.request('GET', '/api/model/options?include_unconfigured=1'))
@@ -176,8 +170,8 @@ export function registerIpcHandlers(ctx) {
   handle('session:usage', gwCall('session.usage'))
   handle('session:undo', gwCall('session.undo'))
   handle('session:branch', gwCall('session.branch'))
-  handle('session:delete', async (payload = {}) => gwCall('session.delete')(payload))
-  handle('session:close', async (payload = {}) => gwCall('session.close')(payload))
+  handle('session:delete', serialized('session.delete'))
+  handle('session:close', serialized('session.close'))
 
   // ── 文件面板与会话搜索（REST）────────────────────────────────────────────
   handle('fs:list', (payload) => getRuntime()?.request('GET', `/api/fs/list?path=${encodeURIComponent(payload?.path ?? '')}`))
