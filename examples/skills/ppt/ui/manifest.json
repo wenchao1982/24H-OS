@@ -1,0 +1,15 @@
+{
+  "protocol": "24os-skill-ui/1",
+  "id": "ppt",
+  "title": "PPT 工作台",
+  "entry": "index.html",
+  "host": "iframe",
+  "capabilities": ["callModel", "readFile", "writeFile", "runTool", "emitEvent", "resize"],
+  "permissions": [
+    "fs:read:workspace",
+    "fs:write:workspace",
+    "model:call",
+    "tool:ppt.export"
+  ],
+  "size": { "width": 980, "height": 660 }
+}

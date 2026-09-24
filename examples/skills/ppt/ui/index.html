@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PPT 工作台 · 24H-OS Skill UI</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div id="banner" class="banner" hidden></div>
+
+    <div class="app">
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand-dot"></span>
+          <span>PPT 工作台</span>
+          <span class="brand-sub">24os-skill-ui/1</span>
+        </div>
+        <div class="topbar-actions">
+          <label class="field-inline">
+            主题色
+            <input id="theme-color" type="color" value="#4C8DFF" />
+          </label>
+          <button id="model-btn" class="btn" type="button" title="通过 RPC callModel 精简要点（桩）">
+            调模型精简
+          </button>
+          <button id="export-btn" class="btn primary" type="button">
+            生成 PPTX
+          </button>
+        </div>
+      </header>
+
+      <div class="body">
+        <aside class="col-left">
+          <div class="section-title">模板</div>
+          <div id="templates" class="templates"></div>
+
+          <div class="section-title">
+            幻灯片
+            <button id="add-slide" class="mini-btn" type="button" title="新增幻灯片">+</button>
+          </div>
+          <ul id="slide-list" class="slide-list"></ul>
+        </aside>
+
+        <section class="col-center">
+          <div id="editor" class="editor"></div>
+          <div class="preview-wrap">
+            <div id="preview" class="preview"></div>
+          </div>
+        </section>
+
+        <aside class="col-right">
+          <div class="section-title">
+            RPC 日志
+            <button id="clear-log" class="mini-btn" type="button">清空</button>
+          </div>
+          <div id="log" class="log"></div>
+          <div class="log-hint">所有宿主能力调用都会显示在这里（与宿主调试面板呼应）。</div>
+        </aside>
+      </div>
+    </div>
+
+    <script src="./main.js" defer></script>
+  </body>
+</html>
