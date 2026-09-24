@@ -10,6 +10,9 @@ export type AgentSource = "profiles" | "mock";
 /** Hermes 运行模式：live = 读取真实 ~/.hermes，mock = 使用内置示例数据。 */
 export type HermesMode = "live" | "mock";
 
+/** hermes CLI 可执行文件的来源（按探测优先级）。 */
+export type HermesCliSource = "env" | "path" | "local-bin" | "hermes-bin";
+
 /** 模型配置（预留给未来的模型切换/编辑 UI）。 */
 export interface ModelConfig {
   /** 默认模型名，例如 "deepseek-flash"。 */
@@ -216,11 +219,38 @@ export interface HermesStatus {
   version: string | null;
   /** hermes 可执行文件路径，未检测到为 null。 */
   cliPath: string | null;
+  /** CLI 来源：env | path | local-bin | hermes-bin；未检测到为 null。 */
+  cliSource: HermesCliSource | null;
   /** ~/.hermes 目录，未检测到为 null。 */
   homePath: string | null;
+  /** 实际生效的 Hermes 主目录（HERMES_HOME/OS_HERMES_HOME 或默认 ~/.hermes）。 */
+  activeHome: string | null;
+  /** 探测到的所有有效 Hermes 主目录（含 ~/.hermes、~/hermes-desktop/home 等）。 */
+  hermesHomes: string[];
   /** 当前可用（真实）profile 数量。 */
   profileCount: number;
   /** 面向用户的中文说明字符串。 */
+  message: string;
+}
+
+/** 模型调用最终实际走的通道。 */
+export type CompleteVia = "gateway" | "oneshot" | "stub";
+
+/** GET /api/hermes/gateway 的返回结构（TUI gateway 运行状态）。 */
+export interface GatewayStatus {
+  /** 是否已由工作台拉起 gateway 进程。 */
+  running: boolean;
+  /** gateway 监听端口；未运行为 null。 */
+  port: number | null;
+  /** 是否已建立 WS 连接。 */
+  connected: boolean;
+  /** 使用的 hermes CLI 路径。 */
+  cliPath: string | null;
+  /** 最近一次 completePrompt 实际走的通道。 */
+  via: CompleteVia | null;
+  /** 最近一次 gateway 错误（用于调试面板）。 */
+  lastError: string | null;
+  /** 面向用户的中文说明。 */
   message: string;
 }
 
@@ -401,7 +431,13 @@ export type ConfigEditAction =
 export interface ConfigEditResult {
   ok: boolean;
   action: ConfigEditAction;
-  /** 被修改 / 写入的文件绝对路径。 */
+  /**
+   * 实际写入通道：
+   *   - "cli"：通过官方 `hermes` 命令落盘（推荐，避免与 Hermes 进程并发写冲突）；
+   *   - "file"：CLI 不可用 / 命令失败时回退为工作台直接文件写（备份 + 原子写）。
+   */
+  via: "cli" | "file";
+  /** 被修改 / 写入的文件绝对路径（走 CLI 时为空，因为由 Hermes 自身写入）。 */
   files: string[];
   /** 写操作前生成的备份文件绝对路径。 */
   backups: string[];

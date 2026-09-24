@@ -29,11 +29,12 @@ beforeEach(async () => {
   fake = makeFakeHermesCli();
   tempDirs.push(fake.dir);
 
-  // 默认：无 CLI、market 用临时文件、备份到临时目录。
+  // 默认：无 CLI（显式指向不存在的路径，避免探测到真实 ~/.local/bin/hermes）、
+  // market 用临时文件、备份到临时目录。
   savedEnv.OS_HERMES_CLI = process.env.OS_HERMES_CLI;
   savedEnv.OS_BACKUP_DIR = process.env.OS_BACKUP_DIR;
   savedEnv.OS_MARKET_FILE = process.env.OS_MARKET_FILE;
-  delete process.env.OS_HERMES_CLI;
+  process.env.OS_HERMES_CLI = path.join(newTempDir("24os-nocli-"), "missing-hermes");
   process.env.OS_BACKUP_DIR = newTempDir("24os-route-backups-");
 
   const marketFile = path.join(newTempDir("24os-market-"), "index.json");
@@ -168,7 +169,10 @@ describe("POST /api/agents/:id/update", () => {
       payload: { confirm: true },
     });
     expect(res.statusCode).toBe(200);
-    expect(fake.calls()).toEqual([["profile", "update", "agent-1"]]);
+    // 变更后 refreshSnapshot 会再次探测 CLI 版本（--version），过滤掉该探针调用。
+    expect(fake.calls().filter((call) => call[0] !== "--version")).toEqual([
+      ["profile", "update", "agent-1"],
+    ]);
   });
 });
 

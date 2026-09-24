@@ -98,9 +98,35 @@ export const ALLOWED_CONFIG_SUBCOMMANDS: readonly string[] = [
 
 const ALLOWED_CONFIG_SET = new Set(ALLOWED_CONFIG_SUBCOMMANDS);
 
+/** profile 选择器（`-p <id>` / `--profile <id>`）允许的名字格式。 */
+const PROFILE_NAME_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+
+/**
+ * 剥离开头的 profile 选择器（`-p <name>` / `--profile <name>` / `--profile=<name>`）。
+ * 返回剥离后的参数；若非法的选择器则返回 null。
+ * `-p/--profile` 由 hermes 在 argparse 之前消费（设置 HERMES_HOME），因此需在此放行。
+ */
+export function stripProfileSelector(
+  args: readonly string[],
+): { rest: readonly string[]; profile: string | null } | null {
+  if (args.length === 0) return { rest: args, profile: null };
+  const first = args[0];
+  if (first === "-p" || first === "--profile") {
+    const name = args[1];
+    if (typeof name !== "string" || !PROFILE_NAME_PATTERN.test(name)) return null;
+    return { rest: args.slice(2), profile: name };
+  }
+  if (first.startsWith("--profile=")) {
+    const name = first.slice("--profile=".length);
+    if (!PROFILE_NAME_PATTERN.test(name)) return null;
+    return { rest: args.slice(1), profile: name };
+  }
+  return { rest: args, profile: null };
+}
+
 /**
  * 校验参数是否命中白名单。
- * 仅允许：
+ * 仅允许（可选前缀 `-p <id>` / `--profile <id>`）：
  *   - ["--version"] / ["--help"]
  *   - ["profile", <allowed>, ...safeArgs]
  *   - ["config", set, KEY, VALUE] / ["config", get|list|unset, ...safeArgs]
@@ -116,10 +142,15 @@ export function isAllowedCommand(args: readonly string[]): boolean {
     if (arg.length > MAX_ARG_LENGTH) return false;
   }
 
-  const [first, second] = args;
+  const stripped = stripProfileSelector(args);
+  if (!stripped) return false;
+  const rest = stripped.rest;
+  if (rest.length === 0) return false;
+
+  const [first, second] = rest;
 
   if (first === "--version" || first === "--help") {
-    return args.length === 1;
+    return rest.length === 1;
   }
 
   if (first === "config") {
@@ -127,7 +158,7 @@ export function isAllowedCommand(args: readonly string[]): boolean {
     if (second === "--help") return true;
     if (!ALLOWED_CONFIG_SET.has(second)) return false;
     // `config set KEY VALUE`：恰好 4 个参数，值作为**单个**参数。
-    if (second === "set") return args.length === 4;
+    if (second === "set") return rest.length === 4;
     return true;
   }
 
@@ -158,7 +189,7 @@ export async function runHermes(
   if (!isAllowedCommand(args)) {
     throw lifecycleError(
       "COMMAND_NOT_ALLOWED",
-      `命令未在白名单中：hermes ${args.join(" ")}（仅允许 profile 下的 ${ALLOWED_PROFILE_SUBCOMMANDS.join("/")} 与 --version/--help）`,
+      `命令未在白名单中：hermes ${args.join(" ")}（仅允许 [-p <id>] profile ${ALLOWED_PROFILE_SUBCOMMANDS.join("/")}、config ${ALLOWED_CONFIG_SUBCOMMANDS.join("/")} 与 --version/--help）`,
     );
   }
 

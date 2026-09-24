@@ -3,6 +3,7 @@ import Fastify from "fastify";
 import type { FastifyError } from "fastify";
 import type { ApiError } from "@shared/types";
 import { getSnapshot } from "./hermes";
+import { stopSharedGateway } from "./hermes/gateway";
 import { agentRoutes } from "./routes/agents";
 import { hermesRoutes } from "./routes/hermes";
 import { skillUiRoutes } from "./routes/skillUi";
@@ -111,6 +112,9 @@ app.get("/", async () => ({
   description: "Hermes-centered multi-agent desktop workbench (M4 · Skill UI host)",
   endpoints: [
     "/api/hermes/status",
+    "/api/hermes/gateway (GET)",
+    "/api/hermes/gateway/start (POST)",
+    "/api/hermes/gateway/stop (POST)",
     "/api/agents",
     "/api/agents/:id",
     "/api/agents (POST install)",
@@ -129,6 +133,27 @@ app.get("/", async () => ({
     "/api/health",
   ],
 }));
+
+// 关闭钩子：停止由本进程拉起（或连接）的 TUI gateway，避免残留 hermes serve。
+let shuttingDown = false;
+async function shutdown(signal: string): Promise<void> {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  app.log.info(`收到 ${signal}，正在关闭…`);
+  try {
+    await stopSharedGateway();
+  } catch (error) {
+    app.log.warn(`停止 gateway 失败：${(error as Error).message}`);
+  }
+  try {
+    await app.close();
+  } catch {
+    // 忽略关闭期错误。
+  }
+  process.exit(0);
+}
+process.on("SIGINT", () => void shutdown("SIGINT"));
+process.on("SIGTERM", () => void shutdown("SIGTERM"));
 
 try {
   const snapshot = await getSnapshot();

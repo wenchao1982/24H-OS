@@ -14,6 +14,7 @@ import type {
   UpdateMcpServerRequest,
 } from "@shared/types";
 import { resolveHermesCli, runHermes } from "./cli";
+import { resolveHomeForCli } from "./detect";
 import { LifecycleError } from "./errors";
 import { extractMcpServers, extractModel, parseConfigObject } from "./profiles";
 
@@ -26,7 +27,17 @@ import { extractMcpServers, extractModel, parseConfigObject } from "./profiles";
  *   - 功能描述 / 标签：工作台自有元数据 `~/.24os/agents/<id>/meta.json`
  *     （与 Hermes 无关，避免猜测 Hermes 内部字段）；
  *   - MCP servers：`config.yaml` 顶层 `mcp_servers`；
- *   - 环境变量（密钥）：`<profile>/.env`（若 CLI 可用则优先 `hermes config set`）。
+ *   - 环境变量（密钥）：`<profile>/.env`。
+ *
+ * 写入策略（M5.x §4.2）：**官方命令优先**。
+ *   - 模型：`hermes [-p <id>] config set model <value>`；失败回退 YAML 编辑；
+ *   - MCP：`hermes [-p <id>] config set mcp_servers.<name> <JSON spec>` /
+ *     `config unset mcp_servers.<name>`；失败回退 YAML 编辑；
+ *   - env：`hermes [-p <id>] config set|unset <KEY> [<value>]`；失败回退 `.env` 编辑；
+ *   - description / tags：恒写工作台 meta.json（非 Hermes 字段，无官方命令）。
+ *   `-p` 规则：id === "default" 或目标目录 == activeHome 时不加；否则 `-p <id>`。
+ *   返回值 `via` 标注实际通道（"cli" | "file"）。这样可尽量避免与 Hermes
+ *   进程并发写 config.yaml 造成冲突；官方命令由 Hermes 自身原子写。
  *
  * 安全基线（所有写操作共同保证）：
  *   1. confirm：未显式 `confirm:true` → CONFIRM_REQUIRED，不触碰磁盘；
@@ -43,7 +54,7 @@ import { extractMcpServers, extractModel, parseConfigObject } from "./profiles";
 
 /** 配置编辑依赖注入（全部可选，便于测试隔离）。 */
 export interface ConfigEditDeps {
-  /** Hermes 主目录（默认 HERMES_HOME/OS_HERMES_HOME 或 ~/.hermes）。 */
+  /** Hermes 主目录（默认 OS_HERMES_HOME/HERMES_HOME → CLI 包装脚本 home → ~/.hermes）。 */
   hermesHome?: string;
   /** 备份根目录（默认 OS_CONFIG_BACKUP_DIR / OS_BACKUP_DIR 或 ~/.24os/backups）。 */
   backupDir?: string;
@@ -83,11 +94,24 @@ const RESTORABLE_FILES = new Set([
  * 路径解析与校验
  * ------------------------------------------------------------------ */
 
-/** 解析 Hermes 主目录（在调用时读取 env，便于测试注入）。 */
-export function resolveHermesHome(override?: string): string {
+/**
+ * 解析 Hermes 主目录（在调用时读取 env，便于测试注入）。
+ *
+ * 优先级：显式 override → OS_HERMES_HOME / HERMES_HOME → CLI 包装脚本声明的 home → ~/.hermes。
+ * 与 detect.ts 一致：当 CLI 可用且其包装脚本指定了 HERMES_HOME 时，采用同一目录，
+ * 避免「CLI 写 A、文件回退写 B」的不一致。
+ *
+ * cliPath：undefined = 同步自动探测；null = CLI 不可用；字符串 = 直接使用。
+ */
+export function resolveHermesHome(
+  override?: string,
+  cliPath?: string | null,
+): string {
   if (override && override.trim()) return path.resolve(override.trim());
   const fromEnv = process.env.OS_HERMES_HOME ?? process.env.HERMES_HOME;
   if (fromEnv && fromEnv.trim()) return path.resolve(fromEnv.trim());
+  const cliHome = resolveHomeForCli(cliPath);
+  if (cliHome) return path.resolve(cliHome);
   return path.join(os.homedir(), ".hermes");
 }
 
@@ -153,7 +177,7 @@ export function validateEnvKey(key: unknown): string {
  */
 export function resolveAgentDir(id: string, deps: ConfigEditDeps = {}): string {
   const agentId = validateAgentId(id);
-  const hermesHome = resolveHermesHome(deps.hermesHome);
+  const hermesHome = resolveHermesHome(deps.hermesHome, deps.cliPath);
   const profilesDir = path.join(hermesHome, "profiles");
   const named = path.join(profilesDir, agentId);
 
@@ -499,6 +523,45 @@ function requireConfirm(confirm: unknown): void {
   }
 }
 
+/** 对象是否自有某属性（防御原型链）。 */
+function hasOwn(target: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(target, key);
+}
+
+/**
+ * 目标 profile 的 CLI 选择参数。
+ * 规则：id === "default"（或解析出的目录 == activeHome）→ 不加 `-p`；否则 `-p <id>`。
+ * 参数一律作为独立数组元素传递，绝不经过 shell。
+ */
+function profileSelectorArgs(
+  id: string,
+  dir: string,
+  deps: ConfigEditDeps,
+): string[] {
+  const hermesHome = resolveHermesHome(deps.hermesHome, deps.cliPath);
+  if (id === "default" || path.resolve(dir) === path.resolve(hermesHome)) return [];
+  return ["-p", id];
+}
+
+/**
+ * 尝试用官方 CLI 写配置（`config set` / `config unset`）。
+ * 成功返回 true；CLI 不可用、命令失败或未命中白名单 → false（调用方回退文件写）。
+ * 命令字符串可能含值，因此**只返回布尔**，不向调用方/日志暴露命令或 stdout。
+ */
+async function tryCliConfig(
+  args: string[],
+  deps: ConfigEditDeps,
+): Promise<boolean> {
+  const cliPath = await resolveHermesCli(deps.cliPath);
+  if (!cliPath) return false;
+  try {
+    const result = await runHermes(args, { cliPath, timeoutMs: deps.timeoutMs });
+    return result.ok;
+  } catch {
+    return false;
+  }
+}
+
 /** 读取 config.yaml 并构造可编辑的 YAML Document。 */
 async function loadConfigDocument(
   dir: string,
@@ -510,8 +573,12 @@ async function loadConfigDocument(
 
 /**
  * 更新模型 / 描述 / 标签。
- * - model → config.yaml（若原 `model` 是 mapping 则更新其 `default`，保留其它子字段）；
- * - description / tags → `~/.24os/agents/<id>/meta.json`。
+ * - model → 先试官方 `hermes [-p <id>] config set model <value>`，失败回退 config.yaml
+ *   （若原 `model` 是 mapping 则更新其 `default`，保留其它子字段）；
+ * - description / tags → 工作台自有 `~/.24os/agents/<id>/meta.json`（非 Hermes 字段，不走 CLI）。
+ *
+ * `via` 反映 **Hermes 配置**的写入通道：model 走 CLI 则为 "cli"，否则 "file"；
+ * 仅改 meta（描述 / 标签）时恒为 "file"。
  */
 export async function updateAgentConfig(
   id: string,
@@ -523,22 +590,35 @@ export async function updateAgentConfig(
   const dir = resolveAgentDir(agentId, deps);
   const acc: WriteAcc = { files: [], backups: [] };
   const messages: string[] = [];
+  const selector = profileSelectorArgs(agentId, dir, deps);
+  let updated = false;
+  let via: "cli" | "file" = "file";
 
   if (patch.model !== undefined) {
     if (typeof patch.model !== "string" || patch.model.trim().length === 0) {
       throw new LifecycleError("INVALID_VALUE", "model 必须是非空字符串。");
     }
     const value = patch.model.trim();
-    const { doc, file } = await loadConfigDocument(dir);
-    const plain = (doc.toJS() ?? {}) as Record<string, unknown>;
-    if (isPlainObject(plain.model)) {
-      // 保留 model 下的 provider 等其它子字段，只改默认模型。
-      doc.setIn(["model", "default"], value);
+    const cliOk = await tryCliConfig(
+      [...selector, "config", "set", "model", value],
+      deps,
+    );
+    if (cliOk) {
+      via = "cli";
+      messages.push(`模型已更新为 ${value}（via cli）`);
     } else {
-      doc.set("model", value);
+      const { doc, file } = await loadConfigDocument(dir);
+      const plain = (doc.toJS() ?? {}) as Record<string, unknown>;
+      if (isPlainObject(plain.model)) {
+        // 保留 model 下的 provider 等其它子字段，只改默认模型。
+        doc.setIn(["model", "default"], value);
+      } else {
+        doc.set("model", value);
+      }
+      await writeWithBackup(agentId, file, doc.toString(), deps, acc);
+      messages.push(`模型已更新为 ${value}（via file）`);
     }
-    await writeWithBackup(agentId, file, doc.toString(), deps, acc);
-    messages.push(`模型已更新为 ${value}`);
+    updated = true;
   }
 
   if (patch.description !== undefined || patch.tags !== undefined) {
@@ -562,10 +642,11 @@ export async function updateAgentConfig(
       deps,
       acc,
     );
-    messages.push("元数据（描述 / 标签）已更新");
+    messages.push("元数据（描述 / 标签）已更新（via file）");
+    updated = true;
   }
 
-  if (acc.files.length === 0) {
+  if (!updated) {
     throw new LifecycleError(
       "INVALID_VALUE",
       "没有可更新的字段（model / description / tags 至少提供一个）。",
@@ -575,6 +656,7 @@ export async function updateAgentConfig(
   return {
     ok: true,
     action: "update-config",
+    via,
     files: acc.files,
     backups: acc.backups,
     message: messages.join("；"),
@@ -596,11 +678,28 @@ export async function addMcpServer(
   const { doc, file } = await loadConfigDocument(dir);
   const plain = (doc.toJS() ?? {}) as Record<string, unknown>;
   const existing = isPlainObject(plain.mcp_servers) ? plain.mcp_servers : {};
-  if (Object.prototype.hasOwnProperty.call(existing, name)) {
+  if (hasOwn(existing, name)) {
     throw new LifecycleError(
       "MCP_SERVER_EXISTS",
       `MCP server「${name}」已存在，请使用更新接口。`,
     );
+  }
+
+  // 官方命令优先：`hermes [-p <id>] config set mcp_servers.<name> <JSON spec>`。
+  const selector = profileSelectorArgs(agentId, dir, deps);
+  const cliOk = await tryCliConfig(
+    [...selector, "config", "set", `mcp_servers.${name}`, JSON.stringify(spec)],
+    deps,
+  );
+  if (cliOk) {
+    return {
+      ok: true,
+      action: "add-mcp",
+      via: "cli",
+      files: [],
+      backups: [],
+      message: `已通过 hermes CLI 新增 MCP server「${name}」。`,
+    };
   }
 
   doc.setIn(["mcp_servers", name], spec);
@@ -609,9 +708,10 @@ export async function addMcpServer(
   return {
     ok: true,
     action: "add-mcp",
+    via: "file",
     files: acc.files,
     backups: acc.backups,
-    message: `已新增 MCP server「${name}」。`,
+    message: `已新增 MCP server「${name}」（via file）。`,
   };
 }
 
@@ -631,11 +731,28 @@ export async function updateMcpServer(
   const { doc, file } = await loadConfigDocument(dir);
   const plain = (doc.toJS() ?? {}) as Record<string, unknown>;
   const existing = isPlainObject(plain.mcp_servers) ? plain.mcp_servers : {};
-  if (!Object.prototype.hasOwnProperty.call(existing, serverName)) {
+  if (!hasOwn(existing, serverName)) {
     throw new LifecycleError(
       "MCP_SERVER_NOT_FOUND",
       `未找到 MCP server「${serverName}」。`,
     );
+  }
+
+  // 官方命令优先：`config set mcp_servers.<name> <JSON spec>`（整条覆盖）。
+  const selector = profileSelectorArgs(agentId, dir, deps);
+  const cliOk = await tryCliConfig(
+    [...selector, "config", "set", `mcp_servers.${serverName}`, JSON.stringify(spec)],
+    deps,
+  );
+  if (cliOk) {
+    return {
+      ok: true,
+      action: "update-mcp",
+      via: "cli",
+      files: [],
+      backups: [],
+      message: `已通过 hermes CLI 更新 MCP server「${serverName}」。`,
+    };
   }
 
   doc.setIn(["mcp_servers", serverName], spec);
@@ -644,9 +761,10 @@ export async function updateMcpServer(
   return {
     ok: true,
     action: "update-mcp",
+    via: "file",
     files: acc.files,
     backups: acc.backups,
-    message: `已更新 MCP server「${serverName}」。`,
+    message: `已更新 MCP server「${serverName}」（via file）。`,
   };
 }
 
@@ -665,11 +783,28 @@ export async function removeMcpServer(
   const { doc, file } = await loadConfigDocument(dir);
   const plain = (doc.toJS() ?? {}) as Record<string, unknown>;
   const existing = isPlainObject(plain.mcp_servers) ? plain.mcp_servers : {};
-  if (!Object.prototype.hasOwnProperty.call(existing, serverName)) {
+  if (!hasOwn(existing, serverName)) {
     throw new LifecycleError(
       "MCP_SERVER_NOT_FOUND",
       `未找到 MCP server「${serverName}」。`,
     );
+  }
+
+  // 官方命令优先：`hermes [-p <id>] config unset mcp_servers.<name>`。
+  const selector = profileSelectorArgs(agentId, dir, deps);
+  const cliOk = await tryCliConfig(
+    [...selector, "config", "unset", `mcp_servers.${serverName}`],
+    deps,
+  );
+  if (cliOk) {
+    return {
+      ok: true,
+      action: "remove-mcp",
+      via: "cli",
+      files: [],
+      backups: [],
+      message: `已通过 hermes CLI 删除 MCP server「${serverName}」。`,
+    };
   }
 
   doc.deleteIn(["mcp_servers", serverName]);
@@ -678,9 +813,10 @@ export async function removeMcpServer(
   return {
     ok: true,
     action: "remove-mcp",
+    via: "file",
     files: acc.files,
     backups: acc.backups,
-    message: `已删除 MCP server「${serverName}」。`,
+    message: `已删除 MCP server「${serverName}」（via file）。`,
   };
 }
 
@@ -722,26 +858,21 @@ export async function setEnvVar(
   const backup = await backupFile(agentId, envPath, deps);
   if (backup) acc.backups.push(backup);
 
-  // 1) 优先 CLI（值作为单个参数；execFile，无 shell）。
-  const cliPath = await resolveHermesCli(deps.cliPath);
-  if (cliPath) {
-    try {
-      const result = await runHermes(["config", "set", key, input.value], {
-        cliPath,
-        timeoutMs: deps.timeoutMs,
-      });
-      if (result.ok) {
-        return {
-          ok: true,
-          action: "set-env",
-          files: [],
-          backups: acc.backups,
-          message: `已通过 hermes CLI 设置环境变量 ${key}（值已隐藏）。`,
-        };
-      }
-    } catch {
-      // CLI 失败（含白名单/启动错误）→ 静默回退到直接编辑 .env，避免明文外泄。
-    }
+  // 1) 优先 CLI（值作为单个参数；execFile，无 shell）。含 `-p` 规则。
+  const selector = profileSelectorArgs(agentId, dir, deps);
+  const cliOk = await tryCliConfig(
+    [...selector, "config", "set", key, input.value],
+    deps,
+  );
+  if (cliOk) {
+    return {
+      ok: true,
+      action: "set-env",
+      via: "cli",
+      files: [],
+      backups: acc.backups,
+      message: `已通过 hermes CLI 设置环境变量 ${key}（值已隐藏）。`,
+    };
   }
 
   // 2) 回退：直接编辑 .env（已在上方备份，这里只做原子写）。
@@ -751,6 +882,7 @@ export async function setEnvVar(
   return {
     ok: true,
     action: "set-env",
+    via: "file",
     files: acc.files,
     backups: acc.backups,
     message: `已写入 .env 的环境变量 ${key}（值已隐藏）。`,
@@ -770,12 +902,27 @@ export async function removeEnvVar(
   const dir = resolveAgentDir(agentId, deps);
   const envPath = path.join(dir, ".env");
 
+  // 官方命令优先：`hermes [-p <id>] config unset <KEY>`（env 形状的 key 会路由到 .env）。
+  const selector = profileSelectorArgs(agentId, dir, deps);
+  const cliOk = await tryCliConfig([...selector, "config", "unset", envKey], deps);
+  if (cliOk) {
+    return {
+      ok: true,
+      action: "remove-env",
+      via: "cli",
+      files: [],
+      backups: [],
+      message: `已通过 hermes CLI 删除环境变量 ${envKey}。`,
+    };
+  }
+
   const acc: WriteAcc = { files: [], backups: [] };
   const raw = await readFile(envPath, "utf8").catch(() => "");
   await writeWithBackup(agentId, envPath, removeEnvLine(raw, envKey), deps, acc);
   return {
     ok: true,
     action: "remove-env",
+    via: "file",
     files: acc.files,
     backups: acc.backups,
     message: `已从 .env 删除环境变量 ${envKey}。`,
@@ -850,6 +997,7 @@ export async function restoreBackup(
   return {
     ok: true,
     action: "restore-backup",
+    via: "file",
     files: acc.files,
     backups: acc.backups,
     message: `已从备份 ${name} 还原 ${path.basename(target)}。`,

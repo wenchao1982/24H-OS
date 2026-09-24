@@ -1,4 +1,5 @@
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -25,6 +26,7 @@ import {
   updateMcpServer,
 } from "./configEdit";
 import type { ConfigEditDeps } from "./configEdit";
+import { makeFakeHermesCli } from "../testUtils/fakeHermesCli";
 
 /**
  * M3 配置编辑层测试。
@@ -406,6 +408,170 @@ describe("备份与回滚", () => {
     await expect(
       restoreBackup(fx.id, "not-a-backup.txt", { confirm: true }, fx.deps),
     ).rejects.toMatchObject({ code: "PATH_TRAVERSAL" });
+  });
+});
+
+describe("M5.x 官方命令优先（-p 规则 / via / 回退）", () => {
+  /** 一个总是以非 0 退出的假 CLI。 */
+  function makeFailingCli(): string {
+    const dir = newTempDir("24os-fail-cli-");
+    const cliPath = path.join(dir, "hermes");
+    writeFileSync(cliPath, "#!/usr/bin/env bash\necho boom >&2\nexit 3\n", "utf8");
+    chmodSync(cliPath, 0o755);
+    return cliPath;
+  }
+
+  it("model：CLI 可用 → hermes -p <id> config set model，via:cli 且不写文件", async () => {
+    const fx = setupFixture({ "config.yaml": CONFIG_WITH_COMMENTS });
+    const fake = makeFakeHermesCli();
+    tempDirs.push(fake.dir);
+
+    const result = await updateAgentConfig(
+      fx.id,
+      { model: "deepseek/flash", confirm: true },
+      { ...fx.deps, cliPath: fake.cliPath },
+    );
+
+    expect(result.via).toBe("cli");
+    expect(result.files).toEqual([]);
+    expect(result.backups).toEqual([]);
+    expect(fake.calls()).toEqual([
+      ["-p", fx.id, "config", "set", "model", "deepseek/flash"],
+    ]);
+    expect(readConfigFile(fx).model).toBe("seed-model");
+    expect(backupsFor(fx, "config.yaml")).toEqual([]);
+  });
+
+  it("default：解析目录 == activeHome，不加 -p", async () => {
+    const hermesHome = newTempDir("24os-default-home-");
+    writeFileSync(path.join(hermesHome, "config.yaml"), CONFIG_WITH_COMMENTS, "utf8");
+    const backupDir = newTempDir("24os-default-backups-");
+    const metaDir = newTempDir("24os-default-meta-");
+    const fake = makeFakeHermesCli();
+    tempDirs.push(fake.dir);
+    const deps: ConfigEditDeps = { hermesHome, backupDir, metaDir, cliPath: fake.cliPath };
+
+    const result = await updateAgentConfig("default", { model: "m1", confirm: true }, deps);
+    expect(result.via).toBe("cli");
+    expect(fake.calls()).toEqual([["config", "set", "model", "m1"]]);
+  });
+
+  it("MCP add/update/remove：CLI 可用走 config set/unset mcp_servers.<name>", async () => {
+    const fx = setupFixture({ "config.yaml": CONFIG_WITH_COMMENTS });
+    const fake = makeFakeHermesCli();
+    tempDirs.push(fake.dir);
+    const deps = { ...fx.deps, cliPath: fake.cliPath };
+    const spec = { command: "npx", args: ["-y", "foo"] };
+
+    const add = await addMcpServer(fx.id, { name: "new-srv", spec, confirm: true }, deps);
+    expect(add.via).toBe("cli");
+
+    const upd = await updateMcpServer(
+      fx.id,
+      "existing",
+      { spec: { url: "https://x/mcp" }, confirm: true },
+      deps,
+    );
+    expect(upd.via).toBe("cli");
+
+    const del = await removeMcpServer(fx.id, "existing", { confirm: true }, deps);
+    expect(del.via).toBe("cli");
+
+    expect(fake.calls()).toEqual([
+      ["-p", fx.id, "config", "set", "mcp_servers.new-srv", JSON.stringify(spec)],
+      [
+        "-p",
+        fx.id,
+        "config",
+        "set",
+        "mcp_servers.existing",
+        JSON.stringify({ url: "https://x/mcp" }),
+      ],
+      ["-p", fx.id, "config", "unset", "mcp_servers.existing"],
+    ]);
+
+    // 全程未改文件、无备份。
+    const parsed = readConfigFile(fx);
+    expect(parsed.model).toBe("seed-model");
+    expect(parsed.mcp_servers).toEqual({
+      existing: { command: "node", args: ["a.js"] },
+    });
+    expect(backupsFor(fx, "config.yaml")).toEqual([]);
+  });
+
+  it("env set：CLI 可用 → config set KEY VALUE（含 -p），via:cli，不回显明文", async () => {
+    const fx = setupFixture({ "config.yaml": CONFIG_WITH_COMMENTS, ".env": "API_KEY=old\n" });
+    const fake = makeFakeHermesCli();
+    tempDirs.push(fake.dir);
+    const secret = "supersecretvalue";
+
+    const result = await setEnvVar(
+      fx.id,
+      { key: "NEW_SECRET", value: secret, confirm: true },
+      { ...fx.deps, cliPath: fake.cliPath },
+    );
+
+    expect(result.via).toBe("cli");
+    expect(result.files).toEqual([]);
+    expect(JSON.stringify(result)).not.toContain(secret);
+    expect(fake.calls()).toEqual([["-p", fx.id, "config", "set", "NEW_SECRET", secret]]);
+    // .env 未被直接写入（仍只有旧内容）。
+    expect(readFileSync(path.join(fx.profileDir, ".env"), "utf8")).toBe("API_KEY=old\n");
+  });
+
+  it("env remove：CLI 可用 → config unset KEY，via:cli", async () => {
+    const fx = setupFixture({ "config.yaml": CONFIG_WITH_COMMENTS, ".env": "API_KEY=old\n" });
+    const fake = makeFakeHermesCli();
+    tempDirs.push(fake.dir);
+
+    const result = await removeEnvVar(
+      fx.id,
+      "API_KEY",
+      { confirm: true },
+      { ...fx.deps, cliPath: fake.cliPath },
+    );
+    expect(result.via).toBe("cli");
+    expect(fake.calls()).toEqual([["-p", fx.id, "config", "unset", "API_KEY"]]);
+    expect(readFileSync(path.join(fx.profileDir, ".env"), "utf8")).toBe("API_KEY=old\n");
+  });
+
+  it("CLI 不存在 → 回退文件写，via:file（备份/原子写仍生效）", async () => {
+    const fx = setupFixture({ "config.yaml": CONFIG_WITH_COMMENTS });
+    const result = await updateAgentConfig(
+      fx.id,
+      { model: "file-model", confirm: true },
+      fx.deps, // cliPath: null
+    );
+    expect(result.via).toBe("file");
+    expect(result.files).toContain(path.join(fx.profileDir, "config.yaml"));
+    expect(result.backups).toHaveLength(1);
+    expect(readConfigFile(fx).model).toBe("file-model");
+  });
+
+  it("CLI 命令失败（非 0）→ 回退文件写，via:file", async () => {
+    const fx = setupFixture({ "config.yaml": CONFIG_WITH_COMMENTS });
+    const deps = { ...fx.deps, cliPath: makeFailingCli() };
+    const result = await updateAgentConfig(
+      fx.id,
+      { model: "fallback-model", confirm: true },
+      deps,
+    );
+    expect(result.via).toBe("file");
+    expect(readConfigFile(fx).model).toBe("fallback-model");
+    expect(backupsFor(fx, "config.yaml")).toHaveLength(1);
+  });
+
+  it("meta-only 更新恒为 via:file（非 Hermes 字段，不走 CLI）", async () => {
+    const fx = setupFixture({ "config.yaml": CONFIG_WITH_COMMENTS });
+    const fake = makeFakeHermesCli();
+    tempDirs.push(fake.dir);
+    const result = await updateAgentConfig(
+      fx.id,
+      { description: "d", tags: ["t"], confirm: true },
+      { ...fx.deps, cliPath: fake.cliPath },
+    );
+    expect(result.via).toBe("file");
+    expect(fake.calls()).toEqual([]);
   });
 });
 

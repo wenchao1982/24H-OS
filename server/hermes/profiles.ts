@@ -2,7 +2,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
 import type { Agent, McpServer, Skill } from "@shared/types";
-import { HERMES_HOME, PROFILES_DIR } from "./detect";
+import { HERMES_HOME } from "./detect";
 
 /**
  * 读取真实 Hermes profile，产出 Agent 列表。
@@ -241,26 +241,31 @@ export function parseAgentDir(id: string, dir: string): Agent {
   };
 }
 
-/** 把 ~/.hermes 本身当作默认 profile（无命名 profiles 时使用）。 */
-function parseHomeAgent(): Agent | null {
-  const yamlPath = firstExisting(HERMES_HOME, ["config.yaml", "config.yml"]);
-  const jsonPath = firstExisting(HERMES_HOME, ["config.json"]);
+/** 把 home 本身当作默认 profile（无命名 profiles 时使用）。 */
+function parseHomeAgent(home: string): Agent | null {
+  const yamlPath = firstExisting(home, ["config.yaml", "config.yml"]);
+  const jsonPath = firstExisting(home, ["config.json"]);
   if (!yamlPath && !jsonPath) return null;
 
-  const agent = parseAgentDir("default", HERMES_HOME);
-  agent.description = "Hermes 根目录（~/.hermes）对应的默认 profile。";
+  const agent = parseAgentDir("default", home);
+  agent.description = `Hermes 根目录（${home}）对应的默认 profile。`;
   return agent;
 }
 
-/** 读取所有真实 profile，返回 Agent 列表。 */
-export function readProfiles(): Agent[] {
-  const names = safeListDirs(PROFILES_DIR);
+/**
+ * 读取所有真实 profile，返回 Agent 列表。
+ * `home` 应传入探测得到的 activeHome（与 configEdit / CLI 保持一致）；
+ * 缺省时退回模块加载期解析的 HERMES_HOME（默认 ~/.hermes）。
+ */
+export function readProfiles(home: string = HERMES_HOME): Agent[] {
+  const profilesDir = path.join(home, "profiles");
+  const names = safeListDirs(profilesDir);
 
   if (names.length > 0) {
-    return names.map((name) => parseAgentDir(name, path.join(PROFILES_DIR, name)));
+    return names.map((name) => parseAgentDir(name, path.join(profilesDir, name)));
   }
 
-  // 没有命名 profile 时，退回到 ~/.hermes 本身的默认配置。
-  const home = parseHomeAgent();
-  return home ? [home] : [];
+  // 没有命名 profile 时，退回到 home 本身的默认配置。
+  const homeAgent = parseHomeAgent(home);
+  return homeAgent ? [homeAgent] : [];
 }

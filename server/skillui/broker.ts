@@ -12,6 +12,7 @@ import type {
 } from "@shared/types";
 import { findSkillUi } from "./discover";
 import { exportPptx } from "./tools";
+import { completePrompt, type CompleteResult } from "../hermes/complete";
 
 /**
  * 能力 broker：把 Skill UI 的 RPC 请求映射到宿主能力，并做双重门禁
@@ -24,6 +25,18 @@ import { exportPptx } from "./tools";
 
 /** runTool 白名单。 */
 const ALLOWED_TOOLS = new Set(["ppt.export"]);
+
+/** 模型补全函数签名（便于测试注入 stub）。 */
+export type ModelCompleter = (
+  prompt: string,
+  options?: { profile?: string },
+) => Promise<CompleteResult>;
+
+/** invokeSkill 依赖注入（测试用）。 */
+export interface InvokeDeps {
+  /** 替换 callModel 的实现；默认走 completePrompt 降级链。 */
+  complete?: ModelCompleter;
+}
 
 /** 每个方法额外要求的 permission（runTool 动态按 tool 名推导）。 */
 const CAPABILITY_PERMISSION: Partial<Record<SkillUiCapability, string>> = {
@@ -91,6 +104,7 @@ async function dispatch(
   skill: SkillUiInfo,
   method: SkillUiCapability,
   params: Record<string, unknown>,
+  deps: InvokeDeps,
 ): Promise<InvokeOutcome> {
   const workspace = getWorkspaceRoot(skill.id);
 
@@ -143,11 +157,14 @@ async function dispatch(
 
     case "callModel": {
       const prompt = typeof params.prompt === "string" ? params.prompt : "";
-      // TODO(M5): 接入 Hermes TUI gateway（hermes serve / JSON-RPC），替换此桩实现。
-      return ok({
-        text: `[stub] 这里将接入 Hermes TUI gateway；prompt=${prompt}`,
-        stub: true,
-      });
+      const profile = typeof params.profile === "string" ? params.profile : undefined;
+      const complete = deps.complete ?? completePrompt;
+      try {
+        const result = await complete(prompt, profile ? { profile } : undefined);
+        return ok({ text: result.text, via: result.via, stub: result.stub ?? false });
+      } catch (error) {
+        return fail(502, "MODEL_CALL_FAILED", `模型调用失败：${(error as Error).message}`);
+      }
     }
 
     case "emitEvent":
@@ -164,6 +181,7 @@ async function dispatch(
 /** 处理一次 POST /api/skill-host/invoke。 */
 export async function invokeSkill(
   request: SkillHostInvokeRequest,
+  deps: InvokeDeps = {},
 ): Promise<InvokeOutcome> {
   const skillId = typeof request?.skillId === "string" ? request.skillId : "";
   const method = request?.method;
@@ -197,5 +215,5 @@ export async function invokeSkill(
     return fail(403, "PERMISSION_NOT_DECLARED", `skill 未声明权限：${permission}`);
   }
 
-  return dispatch(skill, method, params);
+  return dispatch(skill, method, params, deps);
 }

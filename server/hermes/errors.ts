@@ -20,7 +20,11 @@ export type LifecycleErrorCode =
   | "MCP_SERVER_EXISTS"
   | "MCP_SERVER_NOT_FOUND"
   | "BACKUP_NOT_FOUND"
-  | "AGENT_NOT_FOUND";
+  | "AGENT_NOT_FOUND"
+  // M5 · TUI gateway
+  | "GATEWAY_UNAVAILABLE"
+  | "GATEWAY_TIMEOUT"
+  | "GATEWAY_RPC_ERROR";
 
 /** 生命周期层的统一错误类型，携带稳定的错误码。 */
 export class LifecycleError extends Error {
@@ -61,7 +65,12 @@ export function statusForCode(code: LifecycleErrorCode): number {
     case "AGENT_NOT_FOUND":
       return 404;
     case "HERMES_CLI_UNAVAILABLE":
+    case "GATEWAY_UNAVAILABLE":
       return 503;
+    case "GATEWAY_TIMEOUT":
+      return 504;
+    case "GATEWAY_RPC_ERROR":
+      return 502;
     case "COMMAND_FAILED":
       return 502;
     default:

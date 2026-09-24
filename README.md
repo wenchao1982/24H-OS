@@ -31,9 +31,11 @@
 │   server/  (Fastify，端口 4319) —— 内核桥接层                                          │
 │                                                                                       │
 │     routes/agents.ts   GET /api/agents · GET /api/agents/:id                          │
-│     routes/hermes.ts   GET /api/hermes/status · GET /api/health                       │
-│     hermes/detect.ts   探测 which hermes / hermes --version / ~/.hermes               │
+│     routes/hermes.ts   GET /api/hermes/status · /api/hermes/gateway[/start|/stop]     │
+│     hermes/detect.ts   探测 CLI（env/PATH/~/.local/bin/~/.hermes/bin）+ 多 home      │
 │     hermes/profiles.ts 读取 ~/.hermes/profiles/* 与 ~/.hermes 本身 → Agent 列表        │
+│     hermes/gateway.ts  hermes serve 子进程 + WS JSON-RPC 客户端（M5.1）               │
+│     hermes/complete.ts 模型补全降级链 gateway → `hermes -z` → stub（M5.1）            │
 │     hermes/mock.ts     无 Hermes 时返回示例 agent                                      │
 │     hermes/index.ts    聚合快照 { agents, status }（带缓存）                           │
 │                                                                                       │
@@ -71,8 +73,12 @@
 │  ├─ hermes/
 │  │  ├─ profiles.ts      # 用 yaml 库解析 config.yaml 产出结构化 Agent 列表
 │  │  ├─ profiles.test.ts # YAML 解析 / 描述提取 单测
-│  │  ├─ detect.ts        # 探测 hermes 是否可用
-│  │  ├─ detect.test.ts   # live / mock 模式判定 单测
+│  │  ├─ detect.ts        # 探测 hermes CLI 位置与多 home（M5.0）
+│  │  ├─ detect.test.ts   # CLI 候选顺序 / home 探测 / live-mock 判定 单测
+│  │  ├─ gateway.ts       # M5.1 hermes serve 子进程 + WS JSON-RPC（ping/capabilities/llm.oneshot）
+│  │  ├─ gateway.test.ts  # 本地 mock WS 服务器：id 关联 / 事件 / 超时 单测
+│  │  ├─ complete.ts      # M5.1 三级降级链 completePrompt（gateway→oneshot→stub）
+│  │  ├─ complete.test.ts # 降级链 / profile 透传 / spawn 假 CLI 单测
 │  │  ├─ cli.ts           # M2-core 安全执行层：spawn（不 shell）+ 子命令白名单 + dryRun
 │  │  ├─ cli.test.ts      # 白名单 / dryRun / 结构化结果 单测（假 CLI）
 │  │  ├─ lifecycle.ts     # M2-core install/update/delete/backup（含删除前备份）
@@ -91,7 +97,8 @@
 │  └─ routes/
 │     ├─ agents.ts        # GET /api/agents, GET /api/agents/:id, M2-core 生命周期 + /api/market
 │     ├─ agents.test.ts   # 路由层 fastify.inject 测试
-│     ├─ hermes.ts        # GET /api/hermes/status
+│     ├─ hermes.ts        # GET /api/hermes/status · /api/hermes/gateway[/start|/stop]
+│     ├─ hermes.test.ts   # 状态 / gateway 路由（隔离真实 home）测试
 │     └─ skillUi.ts       # /api/skill-uis, /skill-ui/:id/*, /api/skill-host/invoke
 └─ web/
    ├─ index.html          # Vite 入口（root = web/）
@@ -137,14 +144,27 @@ npm run start        # 用 tsx 直接跑 server（生产原型模式）
 
 ## Hermes 依赖说明
 
-- 后端启动时会 `detect.ts`：`which hermes` / `hermes --version`，并检查 `~/.hermes`。
-- **live 模式**：检测到 `hermes` CLI，或存在可解析的 `~/.hermes` 配置 →
+`server/hermes/detect.ts` 启动时与每次快照刷新时探测（只读，不修改任何用户文件）：
+
+- **CLI 候选顺序**：`OS_HERMES_CLI`（显式路径）→ `PATH` 里的 `hermes`（`which`）→
+  `~/.local/bin/hermes` → `<home>/bin/hermes`。返回 `cliPath` 与 `cliSource`
+  （`env` / `path` / `local-bin` / `hermes-bin`），因此**不在 PATH 上的安装也能被发现**。
+- **HERMES_HOME 解析顺序**：`OS_HERMES_HOME` → `HERMES_HOME`（env）→ `~/.hermes`；
+  另探测候选 home：`~/.hermes`、`~/hermes-desktop/home`（含 `config.yaml`/`profiles` 才算有效），
+  状态里暴露 `activeHome` 与 `hermesHomes[]`。
+- **live 模式**：找到 CLI，**或**探测到任一有效 hermes home（有配置 / profiles）→
   读取 `~/.hermes/profiles/<name>/`（每个目录一个 agent）；若没有命名 profile，
-  则把 `~/.hermes` 本身当作名为 `default` 的默认 profile。
-- **mock 模式**：既无 CLI 又无 `~/.hermes` → 返回 `server/hermes/mock.ts` 里的示例 agent，
+  则把生效 home 本身当作名为 `default` 的默认 profile。
+- **mock 模式**：既无 CLI 又无任何有效 home → 返回 `server/hermes/mock.ts` 里的示例 agent，
   并在 `/api/hermes/status` 标记 `available:false, mode:"mock"` 与中文说明。
-- 前端顶部状态条会显示 **LIVE / MOCK** 徽标与说明字符串。
-- 本服务对 Hermes **只读**，不会修改 `~/.hermes` 下任何文件。
+- 前端顶部状态条会显示 **LIVE / MOCK** 徽标与说明字符串；`HermesStatus` 新增
+  `cliSource` / `activeHome` / `hermesHomes` 字段（旧字段保持兼容）。
+- **CLI home 一致性（M5.x）**：若 `hermes` 是包装脚本（本机 `~/.local/bin/hermes`），
+  `resolveCliHome()` 解析脚本里的 `export HERMES_HOME=...`，在无显式
+  `OS_HERMES_HOME` / `HERMES_HOME` 时以其声明目录作为 `activeHome`，并纳入 `hermesHomes`。
+  `profiles.ts` / `configEdit.ts` 与 CLI 使用**同一个** home，避免「CLI 写 A、文件回退写 B」。
+- 本服务对 Hermes 的**只读探测与配置编辑**分开：探测/展示不写盘；配置编辑走 M3 的安全
+  保证（confirm / 备份 / 原子写 / 密钥不回显），并**官方命令优先**（见下节）。
 
 ## 安全基线
 
@@ -223,7 +243,7 @@ MCP command/args 与启用状态；`GET /api/agents/:id` 返回结构化详情�
 - UI → 宿主：`{ __24os: true, id, method, params }`
 - 宿主 → UI：`{ __24os: true, id, ok, result? , error? }`
 - 握手：宿主在 iframe `load` 后发 `{ __24os: true, type: "host.init", payload: { protocol, capabilities, permissions, sessionNonce } }`；UI 就绪回 `{ __24os: true, type: "ui.ready" }`。
-- 方法：`callModel`（M4 桩，`TODO(M5)` 接 Hermes TUI gateway）、`readFile`、`writeFile`、`runTool`、`emitEvent`、`resize`。
+- 方法：`callModel`（M5.1 起走真实 Hermes，三级降级：gateway → `hermes -z` → stub，见下节）、`readFile`、`writeFile`、`runTool`、`emitEvent`、`resize`。
 
 **安全边界**：
 
@@ -268,6 +288,54 @@ OS_SKILL_ROOTS=/abs/path/to/skills,$HOME/.hermes/skills npm run dev:server
 
 skills 根发现顺序：`OS_SKILL_ROOTS` → 仓库 `examples/skills` → `~/.hermes/skills` → `~/.hermes/profiles/*/skills`。
 `GET /api/agents` 的 `Skill` 新增 `hasUi` / `uiId` 字段。
+
+## Hermes TUI gateway 与模型补全（M5）
+
+M5 把 Skill UI 的 `callModel` 从桩替换为**真实 Hermes**。主通道是 `hermes serve`
+提供的 JSON-RPC over WebSocket（desktop/TUI 同款 gateway），并带三级降级。
+
+### 契约（实测 + 源码确认）
+
+WS 端点为 `ws://127.0.0.1:<port>/api/ws?token=<SESSION_TOKEN>`；token 由 `GET /`
+的 HTML 注入 `window.__HERMES_SESSION_TOKEN__`。帧格式：
+
+- 请求 `{ "jsonrpc":"2.0", "id", "method", "params" }`
+- 响应 `{ "jsonrpc":"2.0", "id", "result" | "error" }`
+- 通知 `{ "jsonrpc":"2.0", "method":"event", "params":{ "type", "session_id", "payload?" } }`
+
+`complete` 最终使用方法 **`llm.oneshot`**（最简单可拿到文本的通道）：
+params `{ input, profile?, max_tokens?, temperature? }` → result `{ text }`。
+依据：`hermes-agent/tui_gateway/contracts/sessions.py` 的 `LlmOneshotParams` 与
+`methods_session.py` 的 `@method("llm.oneshot")`；并已用一句极短 prompt 实机验证返回 `{text:"pong"}`。
+另有 `ping`（`{pong:true}`）、`gateway.capabilities`（`{per_session_exclusive_submit}`）、
+`tools.list` 可用，作为通道自检（见 `scripts/` 实测与 `gateway.test.ts`）。
+
+### 三级降级链（`server/hermes/complete.ts`）
+
+1. **gateway**：`ensureGateway(cliPath)` 幂等拉起 `hermes serve --port <OS_GATEWAY_PORT> --skip-build [--isolated]`，
+   解析 stdout 的 `HERMES_BACKEND_READY port=<N>`，提取 token 后建立 WS，调用 `llm.oneshot`；
+2. **oneshot**：gateway 不可用时 `spawn(cliPath, ["-p"? , profile, "-z", prompt])`（prompt 作为单个参数，无 shell），取 stdout；
+3. **stub**：全不可用 → `[stub] ...` 文本。
+
+每次返回附 `via: "gateway" | "oneshot" | "stub"`（`callModel` 的 result 含该字段），便于宿主调试面板显示。
+所有 `spawn` 一律 `shell:false`。
+
+### 端点与环境变量
+
+| 端点 | 说明 |
+| --- | --- |
+| `GET /api/hermes/gateway` | gateway 状态：`{ running, port, connected, cliPath, via, lastError, message }`。 |
+| `POST /api/hermes/gateway/start` | 幂等启动 gateway（非破坏性，不强制 confirm）；无 CLI → 503。 |
+| `POST /api/hermes/gateway/stop` | 幂等停止由本进程拉起的 gateway。 |
+
+| 变量 | 作用 | 默认 |
+| --- | --- | --- |
+| `OS_GATEWAY_PORT` | gateway 固定端口 | `0`（由 OS 自选；`hermes serve` 自身默认 9119） |
+| `OS_GATEWAY_ISOLATED` | 设为 `1` 时加 `--isolated`（探测/测试用独立后端） | 关 |
+| `OS_GATEWAY_START_TIMEOUT_MS` | 等待 `HERMES_BACKEND_READY` 的超时 | `30000` |
+
+server 收到 `SIGINT` / `SIGTERM` 时会 `stop()` 自己拉起的 gateway，避免残留 `hermes serve` 进程。
+新增错误码：`GATEWAY_UNAVAILABLE`(503) / `GATEWAY_TIMEOUT`(504) / `GATEWAY_RPC_ERROR`(502)。
 
 ## Agent 生命周期 API（M2-core）
 
@@ -321,6 +389,22 @@ curl -s -X POST localhost:4319/api/agents/reviewer/backup -H 'content-type: appl
 `~/.24os/agents/<id>/meta.json`）、MCP servers（`config.yaml` 顶层 `mcp_servers`）、
 环境变量 / 密钥（`.env`）。完整设计见 [`docs/CONFIG_EDITING.md`](docs/CONFIG_EDITING.md)。
 
+### 写入策略：官方命令优先（M5.x）
+
+为避免与运行中的 Hermes 进程**并发写 config.yaml**，每个写操作**先尝试官方命令**，成功即
+返回 `via:"cli"`；CLI 不可用或命令失败才回退工作台文件写（`via:"file"`，保留备份 / 原子写）：
+
+| 配置 | 官方命令 |
+| --- | --- |
+| 模型 | `hermes [-p <id>] config set model <value>` |
+| MCP 增 / 改 | `hermes [-p <id>] config set mcp_servers.<name> <JSON spec>` |
+| MCP 删 | `hermes [-p <id>] config unset mcp_servers.<name>` |
+| env 设 / 删 | `hermes [-p <id>] config set|unset <KEY> [<value>]` |
+| 描述 / 标签 | ——（非 Hermes 字段，恒写 `meta.json`） |
+
+`-p` 规则：`default`（或目录 == activeHome）不加，否则 `-p <id>`；参数一律走 `spawn(shell:false)`。
+MCP 未用交互式 `mcp add`（discovery-first + 无 `mcp update`），详见 `docs/CONFIG_EDITING.md` §0.2。
+
 | 端点 | 说明 |
 | --- | --- |
 | `GET /api/agents/:id/config` | 读取 `AgentConfig`（`envKeys` 只含键名，绝不返回值）。 |
@@ -332,7 +416,8 @@ curl -s -X POST localhost:4319/api/agents/reviewer/backup -H 'content-type: appl
 | `DELETE /api/agents/:id/env/:key` | body `{ confirm? }`，删除环境变量。 |
 | `POST /api/agents/:id/config/restore` | body `{ backupFileName, confirm? }`，从备份还原（可选）。 |
 
-统一返回 `ConfigEditResult { ok, action, files, backups, message }`；
+统一返回 `ConfigEditResult { ok, action, via, files, backups, message }`，其中 `via`
+标示本次落盘通道（`"cli"` = 官方命令，`"file"` = 工作台文件写；`"cli"` 时 `files`/`backups` 通常为空）。
 错误沿用 `ApiError`，除上表错误码外新增：
 
 | 错误码 | HTTP | 含义 |
@@ -347,13 +432,14 @@ curl -s -X POST localhost:4319/api/agents/reviewer/backup -H 'content-type: appl
 | `BACKUP_NOT_FOUND` | 404 | 备份文件不存在。 |
 | `AGENT_NOT_FOUND` | 404 | 找不到对应 profile 目录。 |
 
-**写操作四重保证**：
+**写操作保证**（文件回退路径）：
 
 1. **confirm**：任何写操作未带 `confirm:true` → 400 `CONFIRM_REQUIRED`，不触碰磁盘；
 2. **备份**：写前把目标文件复制到 `~/.24os/backups/<id>/<file>.<ISO时间戳>.bak`，
-   每个文件最多保留 10 份（超出删最旧）；
+   每个文件最多保留 10 份（超出删最旧）（走官方 CLI 时由 Hermes 自身原子写，工作台不再备份）；
 3. **原子写**：先写同目录临时文件再 `rename`，避免半截文件；
-4. **密钥不回显**：env 相关响应只含键名，`message` 与日志均不含明文值。
+4. **密钥不回显**：env 相关响应只含键名，`message` 与日志均不含明文值；
+5. **官方命令优先**：先试 `hermes config set/unset`（`via:"cli"`），失败才回退 1–4（`via:"file"`）。
 
 ```bash
 # 未带 confirm → 400 CONFIRM_REQUIRED
@@ -365,15 +451,16 @@ curl -s -X PATCH localhost:4319/api/agents/demo/config -H 'content-type: applica
 curl -s -X PATCH localhost:4319/api/agents/demo/config -H 'content-type: application/json' \
   -d '{"model":"deepseek/deepseek-flash","description":"我的 agent","tags":["review"],"confirm":true}'
 
-# 设置密钥（响应不含明文）
+# 设置密钥（响应不含明文；CLI 可用时 via:"cli"，不可用时回退 .env 为 via:"file"）
 curl -s -X POST localhost:4319/api/agents/demo/env -H 'content-type: application/json' \
   -d '{"key":"OPENAI_API_KEY","value":"sk-***","confirm":true}'
-# → {"ok":true,"action":"set-env",...,"message":"已写入 .env 的环境变量 OPENAI_API_KEY（值已隐藏）。"}
+# → {"ok":true,"action":"set-env","via":"cli",...,"message":"已通过 hermes CLI 设置环境变量 OPENAI_API_KEY（值已隐藏）。"}
 ```
 
 环境变量：`OS_META_DIR`（工作台元数据根，默认 `~/.24os/agents`）、
 `OS_CONFIG_BACKUP_DIR` / `OS_BACKUP_DIR`（配置备份根，默认 `~/.24os/backups`）、
-`HERMES_HOME` / `OS_HERMES_HOME`（Hermes 主目录）。
+`HERMES_HOME` / `OS_HERMES_HOME`（Hermes 主目录）、`OS_HERMES_CLI`（CLI 路径；
+指向不存在的路径会强制 `via:"file"`，便于测试回退路径）。
 
 ## 市场（market）
 
@@ -394,7 +481,7 @@ curl -s -X POST localhost:4319/api/agents/demo/env -H 'content-type: application
   4. **M4 Skill UI**——发现（含 ui/manifest.json 才纳入，忽略无 UI / 协议不匹配 / 损坏 JSON）；
      静态托管安全（`../` 穿越被拒、非白名单扩展名被拒）；broker 门禁（未声明 capability → 403、
      工作区越界 → 403、未声明权限 → 403、非白名单工具 → 400）；`ppt.export` 生成非空 pptx；
-     `callModel` 桩。
+     `callModel` 经 `completePrompt`（注入 stub）并透传 prompt/profile。
   5. **M2-core 生命周期**——用**假 hermes CLI**（临时目录里的可执行脚本，把参数写入 `calls.log`，
      并模拟 `profile export -o` 落盘）注入测试：命令白名单拒绝非法子命令（`COMMAND_NOT_ALLOWED`）、
      `CONFIRM_REQUIRED` / `INVALID_SOURCE` / `INVALID_NAME` / `HERMES_CLI_UNAVAILABLE`；
@@ -406,8 +493,12 @@ curl -s -X POST localhost:4319/api/agents/demo/env -H 'content-type: application
      MCP 增/改/删与其它字段保留；`setEnvVar` / `removeEnvVar` 增/替换/删行且保留其它行、
      非法 key 拒绝、**返回值不含明文**；备份 `.bak` 生成且每文件超过 10 份时删最旧；
      路径穿越（id / 备份文件名）被拒；路由层 `PATCH /api/agents/:id/config` 未 confirm → 4xx。
+  7. **M5 探测 / gateway / 降级链**——`detect` 用临时 home 断言 CLI 候选顺序与 `cliSource`、
+   `hermesHomes` / `activeHome`；`parseBackendReadyLine` / `parseSessionToken`；
+   `GatewayClient` 用**本地 mock WS 服务器**验证 id 关联、事件通知回调、RPC 错误与超时；
+   `completePrompt` 注入假 CLI 验证 gateway→oneshot→stub 三级降级与 `via`、`-p` profile 透传。
 - **验证命令统一为 `npm run check`**（等价于 `npm run typecheck && npm test`）。
-  当前共 **108** 个用例。
+  当前共 **139** 个用例。
 
 ```bash
 npm run check
@@ -418,9 +509,11 @@ npm run check
 - ~~**M4**：功能性 Skill UI 宿主协议（iframe + postMessage RPC 桥）~~ ✅ 已完成。
 - ~~**M2-core**：`hermes profile install / update / delete / export` 对接 + 小市场 + 两段式 dryRun 确认~~ ✅ 已完成。
 - ~~**M3**：Agent 配置编辑落盘（模型 / 描述 / MCP / 环境变量，含 confirm / 备份 / 原子写 / 回滚）~~ ✅ 已完成。
+- ~~**M5.0**：`detect.ts` 增强——非 PATH CLI 探测、`OS_HERMES_HOME`/多 home、状态暴露探测结果~~ ✅ 已完成。
+- ~~**M5.1**：TUI gateway（`hermes serve` JSON-RPC/WS）+ `callModel` 三级降级链（gateway → `hermes -z` → stub）~~ ✅ 已完成（`llm.oneshot` 通道）。
 - **M2（剩余）**：Electron 外壳；Skill 的安装/启停落盘；CLI 变更后的实时刷新优化。
-- **M5**：通信层升级——对接 `hermes serve`（TUI gateway JSON-RPC）替换 `callModel` 桩，获得
-  session 管理、流式事件、审批/clarify、subagent、模型热切换。
+- **M5（剩余）**：会话管理、流式事件、审批/clarify、subagent、模型热切换（当前仅接入 `llm.oneshot` 无状态补全；
+  `session.create` + `prompt.submit` 契约已探明，可作为下一步）。
 - **M2+**：Skill 安装/启停；MCP 网关（连接/调试 MCP server）；模型切换。
 - 代码内以 `TODO(M2+)` / `TODO(M5)` 注释标出了各扩展点。
 
@@ -428,7 +521,11 @@ npm run check
 
 - `index.html` 放在 `web/` 下（因为 Vite `root` 指向 `web/`），而非项目根目录。
 - `build` 采用 `vite build` + `tsc --noEmit`；server 不产出编译产物，运行时由 `tsx` 直接执行 TS。
-- M4 的 `callModel` 为**桩实现**（返回 `[stub]` 文本），真实模型接入留待 M5（`TODO(M5)`）。
+- M5.1 的 `callModel` 已接入真实 Hermes：默认走 gateway 的 `llm.oneshot`；gateway 不可用时
+  降级为 `hermes -z`，再不可用才回退 `[stub]`。`llm.oneshot` 是**无状态**补全（无会话上下文），
+  会话/流式/审批等仍属 M5 剩余项。
+- M5.0 的 `detect.ts` 会探测 `~/.local/bin/hermes` 等非 PATH 位置；`resolveHermesCli` 在
+  `OS_HERMES_CLI` 已设置但路径不存在时返回“不可用”，不再回退到自动探测（便于测试隔离）。
 - `runTool` 目前仅白名单中的 `ppt.export`；`emitEvent` / `resize` 为 no-op（返回 ok）。
 - 权限提示在 prototype 中**自动放行**并记录日志，尚未接入交互式授权。
 - M2-core 生命周期依赖真实 `hermes` CLI；本机未安装 CLI 时，除 `dryRun` 预览外均返回

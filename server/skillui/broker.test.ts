@@ -184,20 +184,45 @@ describe("invokeSkill —— 工具 / 模型桩", () => {
     expect(result.path.endsWith("deck.pptx")).toBe(true);
   });
 
-  it("callModel 为桩实现，返回 [stub] 文本", async () => {
+  it("callModel 经 completePrompt（注入 stub），透传 prompt/profile 与 via", async () => {
     writeSkill(skillsRoot, "t-model", {
       capabilities: ["callModel"],
       permissions: ["model:call"],
     });
-    const outcome = await invokeSkill({
-      skillId: "t-model",
-      method: "callModel",
-      params: { prompt: "精简这段文字" },
-    });
+    const calls: Array<{ prompt: string; profile?: string }> = [];
+    const outcome = await invokeSkill(
+      {
+        skillId: "t-model",
+        method: "callModel",
+        params: { prompt: "精简这段文字", profile: "writer" },
+      },
+      {
+        complete: async (prompt, options) => {
+          calls.push({ prompt, profile: options?.profile });
+          return { text: "精简后的文字", via: "gateway" };
+        },
+      },
+    );
     expect(outcome.status).toBe(200);
-    const result = outcome.body.result as { text: string };
-    expect(result.text).toContain("[stub]");
-    expect(result.text).toContain("精简这段文字");
+    expect(calls).toEqual([{ prompt: "精简这段文字", profile: "writer" }]);
+    const result = outcome.body.result as { text: string; via: string; stub: boolean };
+    expect(result.text).toBe("精简后的文字");
+    expect(result.via).toBe("gateway");
+    expect(result.stub).toBe(false);
+  });
+
+  it("callModel 未声明 model:call 权限 → 403 PERMISSION_NOT_DECLARED", async () => {
+    writeSkill(skillsRoot, "t-model-noauth", {
+      capabilities: ["callModel"],
+      permissions: [],
+    });
+    const outcome = await invokeSkill({
+      skillId: "t-model-noauth",
+      method: "callModel",
+      params: { prompt: "hi" },
+    });
+    expect(outcome.status).toBe(403);
+    expect(outcome.body.error?.code).toBe("PERMISSION_NOT_DECLARED");
   });
 
   it("emitEvent 为 no-op 且返回 ok", async () => {

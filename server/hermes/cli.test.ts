@@ -55,6 +55,26 @@ describe("isAllowedCommand —— 子命令白名单", () => {
   it("拒绝含 NUL 的参数", () => {
     expect(isAllowedCommand(["profile", "list", "a\0b"])).toBe(false);
   });
+
+  it("允许带 -p/--profile 选择器的 config set/unset（M5.x 官方写入）", () => {
+    expect(isAllowedCommand(["-p", "agent-1", "config", "set", "model", "x"])).toBe(true);
+    expect(
+      isAllowedCommand(["-p", "agent-1", "config", "unset", "mcp_servers.foo"]),
+    ).toBe(true);
+    expect(
+      isAllowedCommand(["--profile", "agent-1", "config", "set", "mcp_servers.foo", "{}"]),
+    ).toBe(true);
+    expect(isAllowedCommand(["--profile=agent-1", "config", "get", "model"])).toBe(true);
+    expect(isAllowedCommand(["-p", "agent-1", "profile", "list"])).toBe(true);
+  });
+
+  it("拒绝非法 / 不完整的 profile 选择器", () => {
+    expect(isAllowedCommand(["-p", "../evil", "config", "set", "model", "x"])).toBe(false);
+    expect(isAllowedCommand(["-p", "UPPER", "config", "set", "model", "x"])).toBe(false);
+    expect(isAllowedCommand(["-p"])).toBe(false);
+    expect(isAllowedCommand(["-p", "agent-1"])).toBe(false);
+    expect(isAllowedCommand(["-p", "agent-1", "rm", "-rf", "/"])).toBe(false);
+  });
 });
 
 describe("formatCommand", () => {

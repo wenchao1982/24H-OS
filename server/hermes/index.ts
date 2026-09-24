@@ -29,7 +29,8 @@ let cache: CacheEntry | null = null;
 async function computeSnapshot(): Promise<AgentsResponse> {
   const detection = await detectHermes();
   const mode = decideMode(detection);
-  const agents = mode === "live" ? readProfiles() : getMockAgents();
+  const agents =
+    mode === "live" ? readProfiles(detection.activeHome) : getMockAgents();
   const status = buildStatus(detection, mode, agents.length);
   return { agents, status };
 }
