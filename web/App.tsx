@@ -1,40 +1,59 @@
 import { useEffect, useMemo, useState } from "react";
-import type { Agent, HermesStatus, SkillUiInfo } from "@shared/types";
-import { fetchAgents, fetchSkillUis } from "./api";
+import type { Agent, HermesStatus, MarketEntry, SkillUiInfo } from "@shared/types";
+import { fetchAgents, fetchMarket, fetchSkillUis } from "./api";
+import InstallAgentDialog from "./components/InstallAgentDialog";
 import SkillHost from "./components/SkillHost";
 import AgentDetail from "./pages/AgentDetail";
 
 /**
  * 主布局：
  *   顶部 —— Hermes 状态条（已安装/未安装 + mock 提示）
- *   左侧 —— Tab：Agents 列表 / Skill 市场
+ *   左侧 —— Tab：Agents 列表 / Skill 市场 / Agent 市场（安装）
  *   右侧 —— Agent 详情 或 正在打开的 Skill UI
  */
-type Tab = "agents" | "market";
+type Tab = "agents" | "market" | "store";
 
 export default function App() {
   const [status, setStatus] = useState<HermesStatus | null>(null);
   const [agents, setAgents] = useState<Agent[]>([]);
   const [skillUis, setSkillUis] = useState<SkillUiInfo[]>([]);
+  const [market, setMarket] = useState<MarketEntry[]>([]);
+  const [marketMessage, setMarketMessage] = useState<string>("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [activeUi, setActiveUi] = useState<SkillUiInfo | null>(null);
   const [tab, setTab] = useState<Tab>("agents");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [installOpen, setInstallOpen] = useState(false);
+  const [installSource, setInstallSource] = useState<string | undefined>(undefined);
+
+  const loadAgents = async () => {
+    const data = await fetchAgents();
+    setStatus(data.status);
+    setAgents(data.agents);
+    setSelectedId((prev) =>
+      prev && data.agents.some((agent) => agent.id === prev)
+        ? prev
+        : (data.agents[0]?.id ?? null),
+    );
+  };
 
   useEffect(() => {
     let cancelled = false;
 
     (async () => {
       try {
-        const [agentData, uis] = await Promise.all([
+        const [agentData, uis, marketData] = await Promise.all([
           fetchAgents(),
           fetchSkillUis().catch(() => [] as SkillUiInfo[]),
+          fetchMarket().catch(() => ({ entries: [] as MarketEntry[], message: "" })),
         ]);
         if (cancelled) return;
         setStatus(agentData.status);
         setAgents(agentData.agents);
         setSkillUis(uis);
+        setMarket(marketData.entries);
+        setMarketMessage(marketData.message);
         setSelectedId(agentData.agents[0]?.id ?? null);
       } catch (err) {
         if (!cancelled) {
@@ -60,6 +79,19 @@ export default function App() {
     if (info) setActiveUi(info);
   };
 
+  const openInstall = (source?: string) => {
+    setInstallSource(source);
+    setInstallOpen(true);
+  };
+
+  const refreshAfterMutation = async () => {
+    try {
+      await loadAgents();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
   return (
     <div className="app">
       <StatusBar status={status} error={error} />
@@ -79,7 +111,24 @@ export default function App() {
               className={tab === "market" ? "tab active" : "tab"}
               onClick={() => setTab("market")}
             >
-              Skill 市场 <span className="count">{skillUis.length}</span>
+              Skill <span className="count">{skillUis.length}</span>
+            </button>
+            <button
+              type="button"
+              className={tab === "store" ? "tab active" : "tab"}
+              onClick={() => setTab("store")}
+            >
+              Agent 市场 <span className="count">{market.length}</span>
+            </button>
+          </div>
+
+          <div className="sidebar-toolbar">
+            <button
+              type="button"
+              className="btn-primary btn-block"
+              onClick={() => openInstall()}
+            >
+              ＋ 安装 Agent
             </button>
           </div>
 
@@ -128,6 +177,40 @@ export default function App() {
             </ul>
           )}
 
+          {tab === "store" && (
+            <ul className="agent-list">
+              {market.map((entry) => (
+                <li key={entry.id} className="market-item">
+                  <div className="market-head">
+                    <span className="agent-item-name">{entry.name}</span>
+                    {entry.version && <span className="market-id">v{entry.version}</span>}
+                  </div>
+                  <p className="market-desc">{entry.description}</p>
+                  {entry.tags && entry.tags.length > 0 && (
+                    <div className="market-tags">
+                      {entry.tags.map((tag) => (
+                        <span key={tag} className="chip market-tag">
+                          {tag}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  <code className="struct-meta">{entry.source}</code>
+                  <button
+                    type="button"
+                    className="btn-primary btn-skill-ui"
+                    onClick={() => openInstall(entry.source)}
+                  >
+                    安装
+                  </button>
+                </li>
+              ))}
+              {!loading && market.length === 0 && (
+                <div className="hint">{marketMessage || "市场为空。"}</div>
+              )}
+            </ul>
+          )}
+
           {!loading && tab === "agents" && agents.length === 0 && (
             <div className="hint">还没有 agent。</div>
           )}
@@ -135,7 +218,12 @@ export default function App() {
 
         <main className="content">
           {selectedAgent ? (
-            <AgentDetail agent={selectedAgent} onOpenSkillUi={openSkillUi} />
+            <AgentDetail
+              agent={selectedAgent}
+              status={status}
+              onOpenSkillUi={openSkillUi}
+              onRefresh={refreshAfterMutation}
+            />
           ) : (
             <div className="empty">请选择左侧的一个 agent。</div>
           )}
@@ -146,6 +234,15 @@ export default function App() {
         <div className="skill-host-panel">
           <SkillHost skill={activeUi} onClose={() => setActiveUi(null)} />
         </div>
+      )}
+
+      {installOpen && (
+        <InstallAgentDialog
+          status={status}
+          prefillSource={installSource}
+          onClose={() => setInstallOpen(false)}
+          onDone={refreshAfterMutation}
+        />
       )}
     </div>
   );

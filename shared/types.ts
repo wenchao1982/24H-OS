@@ -224,6 +224,82 @@ export interface AgentsResponse {
   status: HermesStatus;
 }
 
+/* ------------------------------------------------------------------ *
+ * M2-core · Agent 生命周期（install / update / delete / backup）
+ * ------------------------------------------------------------------ */
+
+/** 生命周期动作。 */
+export type LifecycleAction = "install" | "update" | "delete" | "backup";
+
+/**
+ * 生命周期操作的统一返回结构。
+ * 由 server/hermes/lifecycle.ts 产出，经 routes/agents.ts 原样返回给前端。
+ */
+export interface LifecycleResult {
+  ok: boolean;
+  action: LifecycleAction;
+  /** 将执行 / 已执行的命令（人类可读，已做引号转义）。 */
+  command: string;
+  stdout: string;
+  stderr: string;
+  /** 进程退出码；dryRun 或未执行时为 null。 */
+  code: number | null;
+  /** delete 时先备份产生的 tar.gz 路径。 */
+  backupPath?: string;
+  /** 是否为 dryRun（未真正执行）。 */
+  dryRun?: boolean;
+}
+
+/** POST /api/agents（安装）请求体。 */
+export interface InstallAgentRequest {
+  /** git URL（http(s)/git@）或已存在的本地目录。 */
+  source: string;
+  /** 可选的目标 profile 名（不合法则报 INVALID_NAME）。 */
+  name?: string;
+  /** 是否创建别名（透传 --alias）。 */
+  alias?: boolean;
+  /** 危险操作必须显式 true，否则返回 CONFIRM_REQUIRED。 */
+  confirm?: boolean;
+  /** 只返回将执行的命令，不真正执行。 */
+  dryRun?: boolean;
+}
+
+/** POST /api/agents/:id/update 请求体。 */
+export interface UpdateAgentRequest {
+  confirm?: boolean;
+  dryRun?: boolean;
+}
+
+/** DELETE /api/agents/:id 请求体。 */
+export interface DeleteAgentRequest {
+  confirm?: boolean;
+  /** 删除前是否导出备份，默认 true。 */
+  backup?: boolean;
+  dryRun?: boolean;
+}
+
+/* ------------------------------------------------------------------ *
+ * M2-core · 小市场（静态 distribution 列表）
+ * ------------------------------------------------------------------ */
+
+/** 市场里的一个可安装 distribution（静态 stub）。 */
+export interface MarketEntry {
+  id: string;
+  name: string;
+  description: string;
+  /** 传给 installAgent 的 source（git URL 或本地目录）。 */
+  source: string;
+  version?: string;
+  tags?: string[];
+}
+
+/** GET /api/market 的返回结构。 */
+export interface MarketResponse {
+  entries: MarketEntry[];
+  /** 面向用户的说明（例如 market/index.json 不存在时的降级提示）。 */
+  message: string;
+}
+
 /** 统一错误结构。 */
 export interface ApiError {
   error: string;

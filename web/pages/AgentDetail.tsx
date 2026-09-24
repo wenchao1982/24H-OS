@@ -1,27 +1,89 @@
 import { useState } from "react";
-import type { Agent } from "@shared/types";
+import type { Agent, HermesStatus, LifecycleResult } from "@shared/types";
+import { ApiRequestError, backupAgent, deleteAgent, updateAgent } from "../api";
+import CommandResult from "../components/CommandResult";
+import Modal from "../components/Modal";
 
 /**
  * Agent 详情页。
  * M1：只读展示 描述 / 模型 / skills / MCP servers。
- * 预留「编辑」按钮（当前禁用，不落盘）。
- *
- * TODO(M2+): 「编辑」将对接 hermes profile update；
- *            下方 skills 区域将来是 Skill UI 的宿主；
- *            MCP servers 区域将来是 MCP 网关的入口。
+ * M2-core：新增「更新」「备份」「卸载」——先 dryRun 预览命令，再确认执行。
  */
+
+type LifecycleKind = "update" | "backup" | "delete";
+
+/** 把任意异常转成可展示文案（含后端错误码）。 */
+function errorText(error: unknown): string {
+  if (error instanceof ApiRequestError) return `[${error.code}] ${error.message}`;
+  return error instanceof Error ? error.message : String(error);
+}
+
+const RISK_TEXT: Record<LifecycleKind, string> = {
+  update: "将执行 hermes profile update，可能覆盖该 profile 的本地修改。",
+  backup: "将把该 profile 导出为 tar.gz 备份文件（只读操作）。",
+  delete: "此操作会卸载该 profile（默认先导出备份）。删除不可撤销，请谨慎确认。",
+};
+
 export default function AgentDetail({
   agent,
+  status,
   onOpenSkillUi,
+  onRefresh,
 }: {
   agent: Agent;
+  status?: HermesStatus | null;
   onOpenSkillUi?: (uiId: string) => void;
+  onRefresh?: () => void;
 }) {
-  const [editingHint, setEditingHint] = useState<string | null>(null);
+  const [pending, setPending] = useState<{
+    kind: LifecycleKind;
+    preview: LifecycleResult;
+  } | null>(null);
+  const [result, setResult] = useState<LifecycleResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
 
-  const handleEdit = () => {
-    // M1 不落盘，仅提示。
-    setEditingHint("编辑功能将在 M2 接入 hermes profile update，暂未启用。");
+  const cliAvailable = status?.cliPath != null;
+  const cliReason = "未检测到 hermes CLI，生命周期操作不可用（仍可预览 dryRun）。";
+
+  const startLifecycle = async (kind: LifecycleKind) => {
+    setError(null);
+    setResult(null);
+    setBusy(true);
+    try {
+      const preview =
+        kind === "update"
+          ? await updateAgent(agent.id, { dryRun: true })
+          : kind === "backup"
+            ? await backupAgent(agent.id, { dryRun: true })
+            : await deleteAgent(agent.id, { dryRun: true });
+      setPending({ kind, preview });
+    } catch (err) {
+      setError(errorText(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const confirmPending = async () => {
+    if (!pending) return;
+    setError(null);
+    setBusy(true);
+    try {
+      const res =
+        pending.kind === "update"
+          ? await updateAgent(agent.id, { confirm: true })
+          : pending.kind === "backup"
+            ? await backupAgent(agent.id)
+            : await deleteAgent(agent.id, { confirm: true, backup: true });
+      setResult(res);
+      setPending(null);
+      onRefresh?.();
+    } catch (err) {
+      setError(errorText(err));
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
@@ -37,13 +99,40 @@ export default function AgentDetail({
           <span className={agent.source === "mock" ? "badge badge-mock" : "badge badge-live"}>
             {agent.source === "mock" ? "mock" : "profile"}
           </span>
-          <button type="button" className="btn-edit" onClick={handleEdit}>
-            编辑
+          <button
+            type="button"
+            className="btn-secondary"
+            disabled={busy || !cliAvailable}
+            title={!cliAvailable ? cliReason : undefined}
+            onClick={() => startLifecycle("update")}
+          >
+            更新
+          </button>
+          <button
+            type="button"
+            className="btn-secondary"
+            disabled={busy || !cliAvailable}
+            title={!cliAvailable ? cliReason : undefined}
+            onClick={() => startLifecycle("backup")}
+          >
+            备份
+          </button>
+          <button
+            type="button"
+            className="btn-danger"
+            disabled={busy || !cliAvailable}
+            title={!cliAvailable ? cliReason : undefined}
+            onClick={() => startLifecycle("delete")}
+          >
+            卸载
           </button>
         </div>
       </header>
 
-      {editingHint && <div className="notice">{editingHint}</div>}
+      {!cliAvailable && <div className="notice">{cliReason}</div>}
+      {error && <div className="notice notice-error">{error}</div>}
+
+      {result && <CommandResult result={result} title="执行结果" />}
 
       <section className="detail-section">
         <h2>功能描述</h2>
@@ -119,6 +208,44 @@ export default function AgentDetail({
         )}
         <p className="todo-note">TODO: 此处将来接入 MCP 网关。</p>
       </section>
+
+      {pending && (
+        <Modal
+          title={
+            pending.kind === "delete"
+              ? "确认卸载 Agent"
+              : pending.kind === "update"
+                ? "确认更新 Agent"
+                : "确认备份 Agent"
+          }
+          onClose={() => setPending(null)}
+          footer={
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="btn-ghost"
+                onClick={() => setPending(null)}
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                className={pending.kind === "delete" ? "btn-danger" : "btn-primary"}
+                disabled={busy || !cliAvailable}
+                title={!cliAvailable ? cliReason : undefined}
+                onClick={confirmPending}
+              >
+                {pending.kind === "delete" ? "确认卸载" : "确认执行"}
+              </button>
+            </div>
+          }
+        >
+          <div className={pending.kind === "delete" ? "notice notice-error" : "notice"}>
+            {RISK_TEXT[pending.kind]}
+          </div>
+          <CommandResult result={pending.preview} title="将执行（尚未执行）" />
+        </Modal>
+      )}
     </article>
   );
 }

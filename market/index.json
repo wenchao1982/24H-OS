@@ -1,0 +1,26 @@
+[
+  {
+    "id": "code-reviewer",
+    "name": "代码审查员",
+    "description": "专注 PR 审查、风格检查与安全审计的 Hermes profile。",
+    "source": "https://github.com/hermes-profiles/code-reviewer.git",
+    "version": "0.3.1",
+    "tags": ["dev", "review", "security"]
+  },
+  {
+    "id": "data-analyst",
+    "name": "数据分析师",
+    "description": "连接 SQL / CSV，自动生成图表与结论摘要的数据分析 agent。",
+    "source": "https://github.com/hermes-profiles/data-analyst.git",
+    "version": "0.2.0",
+    "tags": ["data", "sql", "viz"]
+  },
+  {
+    "id": "ppt-master",
+    "name": "演示大师",
+    "description": "内置 PPT 工作台 skill，按大纲一键生成演示文稿。",
+    "source": "git@github.com:hermes-profiles/ppt-master.git",
+    "version": "0.1.4",
+    "tags": ["office", "ppt", "skill-ui"]
+  }
+]
