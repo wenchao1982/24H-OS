@@ -181,6 +181,12 @@ export interface McpServer {
   name: string;
   command?: string;
   args?: string[];
+  /** http 型 MCP server 的地址。 */
+  url?: string;
+  /** http 型 MCP server 的请求头。 */
+  headers?: Record<string, string>;
+  /** 传输方式：stdio（command/args）或 http（url/headers）。 */
+  transport?: "stdio" | "http";
   enabled?: boolean;
 }
 
@@ -303,5 +309,102 @@ export interface MarketResponse {
 /** 统一错误结构。 */
 export interface ApiError {
   error: string;
+  message: string;
+}
+
+/* ------------------------------------------------------------------ *
+ * M3 · Agent 配置编辑（模型 / 描述 / MCP / 环境变量）
+ * ------------------------------------------------------------------ */
+
+/**
+ * 一个 MCP server 的配置 spec（写入 config.yaml 的 `mcp_servers.<name>`）。
+ * stdio：提供 `command`（+ 可选 `args`）；http：提供 `url`（+ 可选 `headers`）。
+ */
+export interface McpServerSpec {
+  command?: string;
+  args?: string[];
+  url?: string;
+  headers?: Record<string, string>;
+  enabled?: boolean;
+  [key: string]: unknown;
+}
+
+/**
+ * GET /api/agents/:id/config 的返回结构。
+ * `envKeys` 只含 `.env` 的**键名**，绝不返回值。
+ */
+export interface AgentConfig {
+  id: string;
+  /** config.yaml 顶层 model（字符串）或 model.default；缺失为 null。 */
+  model: string | null;
+  /** 工作台自有元数据 ~/.24os/agents/<id>/meta.json 里的描述。 */
+  description: string;
+  /** 工作台自有元数据里的标签。 */
+  tags: string[];
+  /** config.yaml 顶层 mcp_servers。 */
+  mcpServers: McpServer[];
+  /** `.env` 里的键名列表（不含值）。 */
+  envKeys: string[];
+  /** config.yaml 路径；文件不存在时仍返回预期路径（best-effort 为 null）。 */
+  configPath: string | null;
+  /** `.env` 路径（可能尚不存在）。 */
+  envPath: string;
+  /** meta.json 路径（可能尚不存在）。 */
+  metaPath: string;
+  source: AgentSource;
+}
+
+/** PATCH /api/agents/:id/config 请求体。 */
+export interface UpdateAgentConfigRequest {
+  model?: string;
+  description?: string;
+  tags?: string[];
+  /** 写操作必须显式 true，否则 CONFIRM_REQUIRED。 */
+  confirm?: boolean;
+}
+
+/** POST /api/agents/:id/mcp 请求体。 */
+export interface AddMcpServerRequest {
+  name: string;
+  spec: McpServerSpec;
+  confirm?: boolean;
+}
+
+/** PATCH /api/agents/:id/mcp/:name 请求体。 */
+export interface UpdateMcpServerRequest {
+  spec: McpServerSpec;
+  confirm?: boolean;
+}
+
+/** POST /api/agents/:id/env 请求体。 */
+export interface SetEnvRequest {
+  key: string;
+  value: string;
+  confirm?: boolean;
+}
+
+/** 配置编辑动作类型。 */
+export type ConfigEditAction =
+  | "update-config"
+  | "add-mcp"
+  | "update-mcp"
+  | "remove-mcp"
+  | "set-env"
+  | "remove-env"
+  | "restore-backup";
+
+/**
+ * 配置编辑操作的统一返回结构。
+ * `backups` 为本次写操作前生成的 `.bak` 绝对路径（可直接用于回滚）。
+ * 注意：env 相关动作的 message 绝不包含密钥明文。
+ */
+export interface ConfigEditResult {
+  ok: boolean;
+  action: ConfigEditAction;
+  /** 被修改 / 写入的文件绝对路径。 */
+  files: string[];
+  /** 写操作前生成的备份文件绝对路径。 */
+  backups: string[];
+  /** 面向用户的中文说明（不含密钥明文）。 */
   message: string;
 }

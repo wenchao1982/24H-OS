@@ -1,13 +1,19 @@
 import type {
+  AddMcpServerRequest,
   Agent,
+  AgentConfig,
   AgentsResponse,
+  ConfigEditResult,
   DeleteAgentRequest,
   HermesStatus,
   InstallAgentRequest,
   LifecycleResult,
   MarketResponse,
-  UpdateAgentRequest,
+  SetEnvRequest,
   SkillUiInfo,
+  UpdateAgentConfigRequest,
+  UpdateAgentRequest,
+  UpdateMcpServerRequest,
 } from "@shared/types";
 
 /**
@@ -129,4 +135,90 @@ export function backupAgent(
 /** GET /api/market —— 可安装 distribution 列表。 */
 export function fetchMarket(): Promise<MarketResponse> {
   return request<MarketResponse>("/api/market");
+}
+
+/* ------------------------------------------------------------------ *
+ * M3 · Agent 配置编辑（模型 / 描述 / MCP / 环境变量）
+ * ------------------------------------------------------------------ */
+
+/** GET /api/agents/:id/config —— 结构化配置（env 只有键名）。 */
+export function fetchAgentConfig(id: string): Promise<AgentConfig> {
+  return request<AgentConfig>(`/api/agents/${encodeURIComponent(id)}/config`);
+}
+
+/** PATCH /api/agents/:id/config —— 更新模型 / 描述 / 标签。 */
+export function updateAgentConfig(
+  id: string,
+  body: UpdateAgentConfigRequest,
+): Promise<ConfigEditResult> {
+  return request<ConfigEditResult>(`/api/agents/${encodeURIComponent(id)}/config`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+}
+
+/** POST /api/agents/:id/mcp —— 新增 MCP server。 */
+export function addMcpServer(
+  id: string,
+  body: AddMcpServerRequest,
+): Promise<ConfigEditResult> {
+  return request<ConfigEditResult>(`/api/agents/${encodeURIComponent(id)}/mcp`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+/** PATCH /api/agents/:id/mcp/:name —— 更新 MCP server。 */
+export function updateMcpServer(
+  id: string,
+  name: string,
+  body: UpdateMcpServerRequest,
+): Promise<ConfigEditResult> {
+  return request<ConfigEditResult>(
+    `/api/agents/${encodeURIComponent(id)}/mcp/${encodeURIComponent(name)}`,
+    { method: "PATCH", body: JSON.stringify(body) },
+  );
+}
+
+/** DELETE /api/agents/:id/mcp/:name —— 删除 MCP server。 */
+export function removeMcpServer(
+  id: string,
+  name: string,
+  body: { confirm?: boolean } = {},
+): Promise<ConfigEditResult> {
+  return request<ConfigEditResult>(
+    `/api/agents/${encodeURIComponent(id)}/mcp/${encodeURIComponent(name)}`,
+    { method: "DELETE", body: JSON.stringify(body) },
+  );
+}
+
+/** POST /api/agents/:id/env —— 设置环境变量（返回值不含明文）。 */
+export function setEnvVar(id: string, body: SetEnvRequest): Promise<ConfigEditResult> {
+  return request<ConfigEditResult>(`/api/agents/${encodeURIComponent(id)}/env`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+/** DELETE /api/agents/:id/env/:key —— 删除环境变量。 */
+export function removeEnvVar(
+  id: string,
+  key: string,
+  body: { confirm?: boolean } = {},
+): Promise<ConfigEditResult> {
+  return request<ConfigEditResult>(
+    `/api/agents/${encodeURIComponent(id)}/env/${encodeURIComponent(key)}`,
+    { method: "DELETE", body: JSON.stringify(body) },
+  );
+}
+
+/** POST /api/agents/:id/config/restore —— 从备份还原。 */
+export function restoreAgentConfigBackup(
+  id: string,
+  body: { backupFileName: string; confirm?: boolean },
+): Promise<ConfigEditResult> {
+  return request<ConfigEditResult>(
+    `/api/agents/${encodeURIComponent(id)}/config/restore`,
+    { method: "POST", body: JSON.stringify(body) },
+  );
 }

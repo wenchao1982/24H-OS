@@ -98,8 +98,22 @@ function normalizeMcpServers(raw: unknown): McpServer[] {
     const args = Array.isArray(spec.args)
       ? spec.args.filter((item): item is string => typeof item === "string")
       : undefined;
+    const url = typeof spec.url === "string" ? spec.url : undefined;
+    const headers =
+      spec.headers && typeof spec.headers === "object" && !Array.isArray(spec.headers)
+        ? Object.fromEntries(
+            Object.entries(spec.headers as Record<string, unknown>).filter(
+              (entry): entry is [string, string] => typeof entry[1] === "string",
+            ),
+          )
+        : undefined;
     const enabled = typeof spec.enabled === "boolean" ? spec.enabled : undefined;
-    return { id, name: id, command, args, enabled };
+    const transport: "stdio" | "http" | undefined = command
+      ? "stdio"
+      : url
+        ? "http"
+        : undefined;
+    return { id, name: id, command, args, url, headers, transport, enabled };
   });
 }
 

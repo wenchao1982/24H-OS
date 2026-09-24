@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { Agent, HermesStatus, LifecycleResult } from "@shared/types";
 import { ApiRequestError, backupAgent, deleteAgent, updateAgent } from "../api";
+import AgentConfigEditor from "../components/AgentConfigEditor";
 import CommandResult from "../components/CommandResult";
 import Modal from "../components/Modal";
 
@@ -208,6 +209,8 @@ export default function AgentDetail({
         )}
         <p className="todo-note">TODO: 此处将来接入 MCP 网关。</p>
       </section>
+
+      <AgentConfigEditor agent={agent} onRefresh={onRefresh} />
 
       {pending && (
         <Modal

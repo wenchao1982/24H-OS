@@ -87,11 +87,24 @@ export async function resolveHermesCli(
 }
 
 /**
+ * 允许的 `config` 子命令（M3 环境变量写入用；值始终作为单个参数传递）。
+ */
+export const ALLOWED_CONFIG_SUBCOMMANDS: readonly string[] = [
+  "set",
+  "get",
+  "list",
+  "unset",
+];
+
+const ALLOWED_CONFIG_SET = new Set(ALLOWED_CONFIG_SUBCOMMANDS);
+
+/**
  * 校验参数是否命中白名单。
  * 仅允许：
  *   - ["--version"] / ["--help"]
  *   - ["profile", <allowed>, ...safeArgs]
- * 其余（包括其他顶层命令、其他 profile 子命令）一律拒绝。
+ *   - ["config", set, KEY, VALUE] / ["config", get|list|unset, ...safeArgs]
+ * 其余（包括其他顶层命令、其他 profile/config 子命令）一律拒绝。
  */
 export function isAllowedCommand(args: readonly string[]): boolean {
   if (args.length === 0) return false;
@@ -107,6 +120,15 @@ export function isAllowedCommand(args: readonly string[]): boolean {
 
   if (first === "--version" || first === "--help") {
     return args.length === 1;
+  }
+
+  if (first === "config") {
+    if (second === undefined) return false;
+    if (second === "--help") return true;
+    if (!ALLOWED_CONFIG_SET.has(second)) return false;
+    // `config set KEY VALUE`：恰好 4 个参数，值作为**单个**参数。
+    if (second === "set") return args.length === 4;
+    return true;
   }
 
   if (first !== "profile") return false;

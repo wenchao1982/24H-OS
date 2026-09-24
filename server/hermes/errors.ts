@@ -10,7 +10,17 @@ export type LifecycleErrorCode =
   | "INVALID_SOURCE"
   | "INVALID_NAME"
   | "COMMAND_NOT_ALLOWED"
-  | "COMMAND_FAILED";
+  | "COMMAND_FAILED"
+  // M3 · 配置编辑
+  | "INVALID_KEY"
+  | "INVALID_VALUE"
+  | "INVALID_MCP_SERVER"
+  | "CONFIG_PARSE_FAILED"
+  | "PATH_TRAVERSAL"
+  | "MCP_SERVER_EXISTS"
+  | "MCP_SERVER_NOT_FOUND"
+  | "BACKUP_NOT_FOUND"
+  | "AGENT_NOT_FOUND";
 
 /** 生命周期层的统一错误类型，携带稳定的错误码。 */
 export class LifecycleError extends Error {
@@ -38,7 +48,18 @@ export function statusForCode(code: LifecycleErrorCode): number {
     case "INVALID_SOURCE":
     case "INVALID_NAME":
     case "COMMAND_NOT_ALLOWED":
+    case "INVALID_KEY":
+    case "INVALID_VALUE":
+    case "INVALID_MCP_SERVER":
+    case "CONFIG_PARSE_FAILED":
+    case "PATH_TRAVERSAL":
       return 400;
+    case "MCP_SERVER_EXISTS":
+      return 409;
+    case "MCP_SERVER_NOT_FOUND":
+    case "BACKUP_NOT_FOUND":
+    case "AGENT_NOT_FOUND":
+      return 404;
     case "HERMES_CLI_UNAVAILABLE":
       return 503;
     case "COMMAND_FAILED":

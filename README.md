@@ -1,4 +1,4 @@
-# 24H-OS（M2-core 原型）
+# 24H-OS（M3 原型）
 
 > 以 **Hermes** 为核心的多 agent 桌面工作台。
 > M1 落地只读内核桥接层；M4 落地 **功能性 Skill 的 UI 宿主协议**（沙箱 iframe + postMessage RPC）
@@ -175,9 +175,15 @@ HOST=0.0.0.0 OS_TOKEN=$(openssl rand -hex 16) npm run dev:server
 - `Agent.skills: Skill[]`（`Skill { id, name, description?, path?, enabled? }`）
 - `Agent.mcpServers: McpServer[]`（`McpServer { id, name, command?, args?, enabled? }`）
 
+M3 起新增配置编辑相关类型：`AgentConfig`、`McpServerSpec`、`UpdateAgentConfigRequest`、
+`AddMcpServerRequest`、`SetEnvRequest`、`ConfigEditResult`（见 `shared/types.ts`）。
+`McpServer` 增加 `url` / `headers` / `transport`，以支持 http 型 MCP server。
+
 `server/hermes/profiles.ts` 从 `config.yaml` / `agent.json` 解析出上述结构，
 `mock.ts` 提供同构示例数据，`web/pages/AgentDetail.tsx` 直接渲染 skill 描述、
 MCP command/args 与启用状态；`GET /api/agents/:id` 返回结构化详情。
+`server/hermes/configEdit.ts` 负责配置的读写与安全落盘，前端由
+`web/components/AgentConfigEditor.tsx` 承载编辑界面。
 
 ## Skill UI 协议（24os-skill-ui/1）
 
@@ -308,6 +314,67 @@ curl -s -X POST localhost:4319/api/agents/reviewer/backup -H 'content-type: appl
 
 环境变量：`OS_HERMES_CLI`（覆盖 CLI 路径）、`OS_BACKUP_DIR`（备份目录，默认 `~/.24os/backups`）。
 
+## Agent 配置编辑 API（M3）
+
+让工作台把用户在 UI 里的修改**安全地落盘**到 agent：
+模型（`config.yaml` 顶层 `model`）、功能描述 / 标签（工作台自有元数据
+`~/.24os/agents/<id>/meta.json`）、MCP servers（`config.yaml` 顶层 `mcp_servers`）、
+环境变量 / 密钥（`.env`）。完整设计见 [`docs/CONFIG_EDITING.md`](docs/CONFIG_EDITING.md)。
+
+| 端点 | 说明 |
+| --- | --- |
+| `GET /api/agents/:id/config` | 读取 `AgentConfig`（`envKeys` 只含键名，绝不返回值）。 |
+| `PATCH /api/agents/:id/config` | body `{ model?, description?, tags?, confirm? }`。 |
+| `POST /api/agents/:id/mcp` | body `{ name, spec, confirm? }`，新增 MCP server。 |
+| `PATCH /api/agents/:id/mcp/:name` | body `{ spec, confirm? }`，更新 MCP server。 |
+| `DELETE /api/agents/:id/mcp/:name` | body `{ confirm? }`，删除 MCP server。 |
+| `POST /api/agents/:id/env` | body `{ key, value, confirm? }`，设置环境变量。 |
+| `DELETE /api/agents/:id/env/:key` | body `{ confirm? }`，删除环境变量。 |
+| `POST /api/agents/:id/config/restore` | body `{ backupFileName, confirm? }`，从备份还原（可选）。 |
+
+统一返回 `ConfigEditResult { ok, action, files, backups, message }`；
+错误沿用 `ApiError`，除上表错误码外新增：
+
+| 错误码 | HTTP | 含义 |
+| --- | --- | --- |
+| `INVALID_KEY` | 400 | 环境变量名不匹配 `^[A-Z][A-Z0-9_]*$`。 |
+| `INVALID_VALUE` | 400 | 值非法（如 model 为空、值含换行）。 |
+| `INVALID_MCP_SERVER` | 400 | MCP 名 / spec 非法。 |
+| `MCP_SERVER_EXISTS` | 409 | 新增时 MCP server 已存在。 |
+| `MCP_SERVER_NOT_FOUND` | 404 | 更新 / 删除的 MCP server 不存在。 |
+| `CONFIG_PARSE_FAILED` | 400 | `config.yaml` 无法解析，放弃写入以保护原文件。 |
+| `PATH_TRAVERSAL` | 400 | 检测到路径穿越（id 或备份文件名）。 |
+| `BACKUP_NOT_FOUND` | 404 | 备份文件不存在。 |
+| `AGENT_NOT_FOUND` | 404 | 找不到对应 profile 目录。 |
+
+**写操作四重保证**：
+
+1. **confirm**：任何写操作未带 `confirm:true` → 400 `CONFIRM_REQUIRED`，不触碰磁盘；
+2. **备份**：写前把目标文件复制到 `~/.24os/backups/<id>/<file>.<ISO时间戳>.bak`，
+   每个文件最多保留 10 份（超出删最旧）；
+3. **原子写**：先写同目录临时文件再 `rename`，避免半截文件；
+4. **密钥不回显**：env 相关响应只含键名，`message` 与日志均不含明文值。
+
+```bash
+# 未带 confirm → 400 CONFIRM_REQUIRED
+curl -s -X PATCH localhost:4319/api/agents/demo/config -H 'content-type: application/json' \
+  -d '{"model":"deepseek/deepseek-flash"}'
+# → {"error":"CONFIRM_REQUIRED","message":"配置写操作需要显式 confirm:true。"}
+
+# 带 confirm → 200，且生成备份、保留 config.yaml 其它字段与注释
+curl -s -X PATCH localhost:4319/api/agents/demo/config -H 'content-type: application/json' \
+  -d '{"model":"deepseek/deepseek-flash","description":"我的 agent","tags":["review"],"confirm":true}'
+
+# 设置密钥（响应不含明文）
+curl -s -X POST localhost:4319/api/agents/demo/env -H 'content-type: application/json' \
+  -d '{"key":"OPENAI_API_KEY","value":"sk-***","confirm":true}'
+# → {"ok":true,"action":"set-env",...,"message":"已写入 .env 的环境变量 OPENAI_API_KEY（值已隐藏）。"}
+```
+
+环境变量：`OS_META_DIR`（工作台元数据根，默认 `~/.24os/agents`）、
+`OS_CONFIG_BACKUP_DIR` / `OS_BACKUP_DIR`（配置备份根，默认 `~/.24os/backups`）、
+`HERMES_HOME` / `OS_HERMES_HOME`（Hermes 主目录）。
+
 ## 市场（market）
 
 `GET /api/market` 读取仓库内 `market/index.json`，返回静态的 `MarketEntry[]`
@@ -332,9 +399,15 @@ curl -s -X POST localhost:4319/api/agents/reviewer/backup -H 'content-type: appl
      并模拟 `profile export -o` 落盘）注入测试：命令白名单拒绝非法子命令（`COMMAND_NOT_ALLOWED`）、
      `CONFIRM_REQUIRED` / `INVALID_SOURCE` / `INVALID_NAME` / `HERMES_CLI_UNAVAILABLE`；
      install/update/delete 传给 CLI 的子命令正确；delete 先 `export` 备份再 `delete` 并产生 `backupPath`；
-     dryRun 不真正执行（假 CLI 零调用）；以及路由层 `fastify.inject` 对
+      dryRun 不真正执行（假 CLI 零调用）；以及路由层 `fastify.inject` 对
      `/api/agents`、`/api/agents/:id/update`、`DELETE /api/agents/:id`、`/api/agents/:id/backup`、`/api/market` 的行为。
+  6. **M3 配置编辑**——全部使用**临时 hermesHome / backupDir / metaDir**（绝不触碰真实 `~/.hermes`）：
+     `updateAgentConfig` 写 model 后其它键与**注释保留**、`CONFIRM_REQUIRED`、非法 id；
+     MCP 增/改/删与其它字段保留；`setEnvVar` / `removeEnvVar` 增/替换/删行且保留其它行、
+     非法 key 拒绝、**返回值不含明文**；备份 `.bak` 生成且每文件超过 10 份时删最旧；
+     路径穿越（id / 备份文件名）被拒；路由层 `PATCH /api/agents/:id/config` 未 confirm → 4xx。
 - **验证命令统一为 `npm run check`**（等价于 `npm run typecheck && npm test`）。
+  当前共 **108** 个用例。
 
 ```bash
 npm run check
@@ -344,7 +417,8 @@ npm run check
 
 - ~~**M4**：功能性 Skill UI 宿主协议（iframe + postMessage RPC 桥）~~ ✅ 已完成。
 - ~~**M2-core**：`hermes profile install / update / delete / export` 对接 + 小市场 + 两段式 dryRun 确认~~ ✅ 已完成。
-- **M2（剩余）**：Electron 外壳；Agent 编辑（模型 / skills / MCP）真正落盘；CLI 变更后的实时刷新优化。
+- ~~**M3**：Agent 配置编辑落盘（模型 / 描述 / MCP / 环境变量，含 confirm / 备份 / 原子写 / 回滚）~~ ✅ 已完成。
+- **M2（剩余）**：Electron 外壳；Skill 的安装/启停落盘；CLI 变更后的实时刷新优化。
 - **M5**：通信层升级——对接 `hermes serve`（TUI gateway JSON-RPC）替换 `callModel` 桩，获得
   session 管理、流式事件、审批/clarify、subagent、模型热切换。
 - **M2+**：Skill 安装/启停；MCP 网关（连接/调试 MCP server）；模型切换。
@@ -361,3 +435,13 @@ npm run check
   `HERMES_CLI_UNAVAILABLE`（这是有意的优雅降级）。`OS_HERMES_CLI` 可指向自定义 CLI 便于本地验证。
 - 生命周期操作直接改变 `~/.hermes`（安装/更新/删除）；删除默认先备份到 `~/.24os/backups/`，
   备份失败会中止删除。前端对破坏性操作强制两段式（dryRun 预览 + 确认弹窗）。
+- M3 配置编辑的**描述 / 标签**存放在工作台自有元数据 `~/.24os/agents/<id>/meta.json`，
+  未写入 Hermes 自身文件（避免猜测其内部字段）；`GET /api/agents` 列表的描述仍来自
+  `AGENT.md`/`README.md` 等，暂未合并 meta.json（后续可对齐）。
+- `setEnvVar` 在检测到 `hermes` CLI 时优先执行 `hermes config set <KEY> <VALUE>`（值作为单个
+  参数、无 shell）；CLI 不可用或失败时回退为直接编辑 `.env`。为保证密钥不外泄，无论走哪条
+  路径，响应都不回显命令与明文值。当前环境下默认无 CLI，实际走 `.env` 直写路径。
+- `restoreBackup` 通过备份文件名（`<file>.<ISO 时间戳>.bak`）推断原始文件名并限定在白名单内，
+  还原前会对当前文件再备份一次；仅作为可选回滚能力，前端暂未提供入口。
+- M2-core 的 `deleteAgent` 曾存在「返回的 `backupPath` 与 `backupAgent` 实际写入路径因跨毫秒
+  生成而不一致」的缺陷，已在 M3 一并修复（改为复用实际备份路径）。

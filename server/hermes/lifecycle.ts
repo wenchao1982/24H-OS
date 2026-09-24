@@ -265,11 +265,14 @@ export async function deleteAgent(
     };
   }
 
+  // 使用 backupAgent 实际生成的路径，避免与上面预览用路径的时间戳相差 1ms 导致不一致。
+  let actualBackupPath: string | undefined;
   if (shouldBackup) {
     // 备份失败会抛错并中止删除。
-    await backupAgent(agentId, deps);
+    const backup = await backupAgent(agentId, deps);
+    actualBackupPath = backup.backupPath;
   }
 
   const result = await runHermes(["profile", "delete", agentId], runOptions(deps));
-  return toLifecycleResult("delete", result, false, backupPath);
+  return toLifecycleResult("delete", result, false, actualBackupPath);
 }

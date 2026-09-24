@@ -1,17 +1,33 @@
 import path from "node:path";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import type {
+  AddMcpServerRequest,
   Agent,
+  AgentConfig,
   AgentsResponse,
   ApiError,
+  ConfigEditResult,
   DeleteAgentRequest,
   InstallAgentRequest,
   LifecycleResult,
   MarketResponse,
+  SetEnvRequest,
   Skill,
+  UpdateAgentConfigRequest,
   UpdateAgentRequest,
+  UpdateMcpServerRequest,
 } from "@shared/types";
 import { getSnapshot, refreshSnapshot } from "../hermes";
+import {
+  addMcpServer,
+  readAgentConfig,
+  removeEnvVar,
+  removeMcpServer,
+  restoreBackup,
+  setEnvVar,
+  updateAgentConfig,
+  updateMcpServer,
+} from "../hermes/configEdit";
 import { statusForCode, LifecycleError } from "../hermes/errors";
 import {
   backupAgent,
@@ -72,6 +88,41 @@ async function runLifecycle(
       return { error: error.code, message: error.message };
     }
     throw error;
+  }
+}
+
+/** 把配置编辑异常映射为 ApiError（LifecycleError → 对应状态码）。 */
+function configError(reply: FastifyReply, error: unknown): ApiError {
+  if (error instanceof LifecycleError) {
+    reply.code(statusForCode(error.code));
+    return { error: error.code, message: error.message };
+  }
+  throw error;
+}
+
+/** 只读配置：映射错误即可。 */
+async function runConfigRead<T>(
+  reply: FastifyReply,
+  action: () => Promise<T>,
+): Promise<T | ApiError> {
+  try {
+    return await action();
+  } catch (error) {
+    return configError(reply, error);
+  }
+}
+
+/** 配置写操作：成功且非 dryRun 时刷新快照缓存。 */
+async function runConfigMutation<T>(
+  reply: FastifyReply,
+  action: () => Promise<T>,
+): Promise<T | ApiError> {
+  try {
+    const result = await action();
+    await refreshSnapshot().catch(() => undefined);
+    return result;
+  } catch (error) {
+    return configError(reply, error);
   }
 }
 
@@ -139,6 +190,90 @@ export async function agentRoutes(app: FastifyInstance): Promise<void> {
       );
     },
   );
+
+  /* ---------------- M3 · Agent 配置编辑 ---------------- */
+
+  // GET /api/agents/:id/config —— 读取结构化配置（env 只返回键名）。
+  app.get<{ Params: { id: string } }>(
+    "/api/agents/:id/config",
+    async (request, reply): Promise<AgentConfig | ApiError> =>
+      runConfigRead(reply, () => readAgentConfig(request.params.id)),
+  );
+
+  // PATCH /api/agents/:id/config —— 更新模型 / 描述 / 标签。
+  app.patch<{ Params: { id: string }; Body: UpdateAgentConfigRequest }>(
+    "/api/agents/:id/config",
+    async (request, reply): Promise<ConfigEditResult | ApiError> => {
+      const body = (request.body ?? {}) as UpdateAgentConfigRequest;
+      return runConfigMutation(reply, () =>
+        updateAgentConfig(request.params.id, body),
+      );
+    },
+  );
+
+  // POST /api/agents/:id/mcp —— 新增 MCP server。
+  app.post<{ Params: { id: string }; Body: AddMcpServerRequest }>(
+    "/api/agents/:id/mcp",
+    async (request, reply): Promise<ConfigEditResult | ApiError> => {
+      const body = (request.body ?? {}) as AddMcpServerRequest;
+      return runConfigMutation(reply, () => addMcpServer(request.params.id, body));
+    },
+  );
+
+  // PATCH /api/agents/:id/mcp/:name —— 更新 MCP server。
+  app.patch<{ Params: { id: string; name: string }; Body: UpdateMcpServerRequest }>(
+    "/api/agents/:id/mcp/:name",
+    async (request, reply): Promise<ConfigEditResult | ApiError> => {
+      const body = (request.body ?? {}) as UpdateMcpServerRequest;
+      return runConfigMutation(reply, () =>
+        updateMcpServer(request.params.id, request.params.name, body),
+      );
+    },
+  );
+
+  // DELETE /api/agents/:id/mcp/:name —— 删除 MCP server。
+  app.delete<{ Params: { id: string; name: string }; Body: { confirm?: boolean } }>(
+    "/api/agents/:id/mcp/:name",
+    async (request, reply): Promise<ConfigEditResult | ApiError> => {
+      const body = (request.body ?? {}) as { confirm?: boolean };
+      return runConfigMutation(reply, () =>
+        removeMcpServer(request.params.id, request.params.name, body),
+      );
+    },
+  );
+
+  // POST /api/agents/:id/env —— 设置环境变量（返回值不含明文）。
+  app.post<{ Params: { id: string }; Body: SetEnvRequest }>(
+    "/api/agents/:id/env",
+    async (request, reply): Promise<ConfigEditResult | ApiError> => {
+      const body = (request.body ?? {}) as SetEnvRequest;
+      return runConfigMutation(reply, () => setEnvVar(request.params.id, body));
+    },
+  );
+
+  // DELETE /api/agents/:id/env/:key —— 删除环境变量。
+  app.delete<{ Params: { id: string; key: string }; Body: { confirm?: boolean } }>(
+    "/api/agents/:id/env/:key",
+    async (request, reply): Promise<ConfigEditResult | ApiError> => {
+      const body = (request.body ?? {}) as { confirm?: boolean };
+      return runConfigMutation(reply, () =>
+        removeEnvVar(request.params.id, request.params.key, body),
+      );
+    },
+  );
+
+  // POST /api/agents/:id/config/restore —— 从备份还原（可选能力）。
+  app.post<{
+    Params: { id: string };
+    Body: { backupFileName?: string; confirm?: boolean };
+  }>("/api/agents/:id/config/restore", async (request, reply): Promise<ConfigEditResult | ApiError> => {
+    const body = (request.body ?? {}) as { backupFileName?: string; confirm?: boolean };
+    return runConfigMutation(reply, () =>
+      restoreBackup(request.params.id, body.backupFileName ?? "", {
+        confirm: body.confirm,
+      }),
+    );
+  });
 
   // GET /api/market —— 可安装的 distribution 列表（静态 stub）。
   app.get("/api/market", async (): Promise<MarketResponse> => readMarket());
