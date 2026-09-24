@@ -193,6 +193,8 @@ export interface SkillUiInfo {
   panel?: PanelSpec;
   /** 恒为 true，便于前端统一过滤（类型上与 Agent.skills[].hasUi 呼应）。 */
   hasUi: boolean;
+  /** 该 skill 是否被任一 agent 的 meta.json 标记为 enabled:false（前端不渲染打开入口）。 */
+  disabled?: boolean;
 }
 
 /** 宿主 → iframe 的握手消息 payload。 */
@@ -316,6 +318,8 @@ export interface Agent {
   /** profile 所在目录（真实路径或 mock 标记路径）。 */
   path: string;
   source: AgentSource;
+  /** 工作台 meta.json 的标签（有 meta 记录时合并进列表/详情；无 meta 时缺省）。 */
+  tags?: string[];
 }
 
 /** Hermes 探测/运行状态，用于前端顶部状态条。 */
@@ -412,10 +416,18 @@ export interface ChatStreamEvent {
   payload?: unknown;
   /** approval / clarify：服务端请求 id 与展示信息。 */
   requestId?: string;
+  /** approval / clarify：内部请求 id（与 requestId 相同），decide 时按 chatId+type 定位。 */
+  id?: string;
   command?: string;
   description?: string;
   choices?: string[];
   question?: string;
+  /** approval：展示文案（description||command）；clarify：问题（question 别名）。 */
+  prompt?: string;
+  /** 所属 chat 流 id（decideApproval 的定位键）。 */
+  chatId?: string;
+  /** 审批/澄清已被自动处理（autoApprove 或非交互流的安全默认），UI 无需渲染按钮。 */
+  autoDecided?: boolean;
   /** done：turn 状态（complete / error / interrupted）与 usage。 */
   status?: string;
   usage?: unknown;
@@ -427,6 +439,82 @@ export interface ChatStreamEvent {
 export interface ChatStreamRequest {
   profile?: string;
   prompt: string;
+  /** 客户端生成的 chat 流 id（可选；缺省由服务端生成并随事件回传）。 */
+  chatId?: string;
+  /** 会话模型（session.create 的 model 参数；后续 prompt 生效于该新会话）。 */
+  model?: string;
+  /**
+   * 昂贵模型二次确认放行（force → gateway `config.set` 的 `confirm_expensive_model`）。
+   * 收到 `session/model.confirm_required` 事件后，前端 Modal 确认并以 force:true 重试。
+   */
+  force?: boolean;
+}
+
+/* ------------------------------------------------------------------ *
+ * M5 · 交互式审批 / clarify 决策（chat/decide）
+ * ------------------------------------------------------------------ */
+
+/** 可决策的服务端请求类型。 */
+export type ChatDecisionType = "approval" | "clarify";
+
+/** 标准 approval 选项（契约 ApprovalChoice）。 */
+export type ApprovalChoiceValue = "once" | "session" | "always" | "deny";
+
+/** POST /api/hermes/chat/decide 请求体。 */
+export interface ChatDecideRequest {
+  chatId: string;
+  type: ChatDecisionType;
+  /** approval：once | session | always | deny（或 gateway 透传的 choices 之一）。 */
+  choice?: string;
+  /** clarify：答案（空串 = 跳过）。 */
+  answer?: string;
+}
+
+/** POST /api/hermes/chat/decide 成功响应。 */
+export interface ChatDecideResult {
+  ok: true;
+  chatId: string;
+  /** 被回应的 gateway 服务端请求 id。 */
+  requestId: string;
+  type: ChatDecisionType;
+  /** 实际回传 gateway 的 result（{choice} 或 {answer}）。 */
+  decision: Record<string, unknown>;
+}
+
+/* ------------------------------------------------------------------ *
+ * M5 · subagent（gateway 契约研究结论）
+ * ------------------------------------------------------------------ */
+
+/** GET 研究结论 / subagent 运行结果携带的能力说明。 */
+export interface SubagentSupportInfo {
+  /** 是否存在直接 spawn/run subagent 的 gateway RPC。 */
+  spawnSupported: boolean;
+  /** 是否存在 subagent 观测/控制 RPC（list/tail/interrupt/steer/delegation.*）。 */
+  observeSupported: boolean;
+  /** 研究依据的 gateway 契约版本。 */
+  contractGateway: string;
+  /** 已确认存在的观测/控制方法名。 */
+  methods: string[];
+  /** 已确认存在的 subagent.* 事件名。 */
+  events: string[];
+  /** 中文结论说明。 */
+  note: string;
+}
+
+/** POST /api/hermes/subagent 请求体（真实调模型，需 confirm:true）。 */
+export interface SubagentRunRequest {
+  profile?: string;
+  prompt: string;
+  confirm?: boolean;
+}
+
+/** POST /api/hermes/subagent 响应体。 */
+export interface SubagentRunResult {
+  ok: boolean;
+  supported: boolean;
+  code: string;
+  message: string;
+  contract: SubagentSupportInfo;
 }
 
 /* ------------------------------------------------------------------ *
@@ -512,6 +600,173 @@ export interface ApiError {
 }
 
 /* ------------------------------------------------------------------ *
+ * M6 · AppManifest（24os-appmanifest/1）
+ * ------------------------------------------------------------------ */
+
+/** AppManifest 协议标识。 */
+export const APP_MANIFEST_PROTOCOL = "24os-appmanifest/1";
+
+/** App 来源类型：仓库内置 / 本地目录 / 远程 URL。 */
+export type AppSourceType = "builtin" | "path" | "url";
+
+/** 生命周期钩子名（M6 仅声明与分发到事件总线，M7 实现执行体）。 */
+export type AppHookName = "ui.open" | "config.apply" | "notify";
+
+/** 所有合法 hook 名（校验白名单）。 */
+export const APP_HOOK_NAMES: readonly AppHookName[] = [
+  "ui.open",
+  "config.apply",
+  "notify",
+];
+
+/** 插件输出通道类型（对齐 v3.0 channels→plugins）。 */
+export type AppPluginKind = "http";
+
+/** 生命周期钩子集合。 */
+export interface AppManifestHooks {
+  oninstall?: AppHookName[];
+  onupdate?: AppHookName[];
+  ondelete?: AppHookName[];
+}
+
+/** App 的 profile 交付配置。 */
+export interface AppManifestProfile {
+  /** 基于哪个已有 profile 模板（无则空 profile）。 */
+  template?: string;
+  /** 默认模型（经 configEdit 官方命令优先写入）。 */
+  model?: { default?: string };
+  /** MCP servers（写入 profile config）。 */
+  mcp?: Array<{ name: string; config: Record<string, unknown> }>;
+  /** 环境变量；密钥只存，GET 永不回显明文。 */
+  env?: Record<string, string>;
+  /** 需要落到 `<activeHome>/skills` 的 skill 目录名。 */
+  skills?: string[];
+}
+
+/** App 的 UI 入口（指向 skillui 发现结果）。 */
+export interface AppManifestUi {
+  skillId?: string;
+  host?: SkillUiHostKind;
+}
+
+/** 插件（输出通道）。 */
+export interface AppManifestPlugin {
+  name: string;
+  kind: AppPluginKind;
+  endpoint?: string;
+  /** 从 profile.env 取 token 的键名（不回显值）。 */
+  envKey?: string;
+}
+
+/** 完整性校验。 */
+export interface AppManifestSign {
+  /** 对 source.path 目录内文件按相对路径排序、拼接 `path\ncontent` 后的 sha256。 */
+  sha256?: string;
+}
+
+/** App 来源声明。 */
+export interface AppManifestSource {
+  type: AppSourceType;
+  /** type=builtin/path 时的目录（builtin 相对仓库根）。 */
+  path?: string;
+  /** type=url 时的远程地址。 */
+  url?: string;
+}
+
+/** 解析校验后的 AppManifest（`24os-appmanifest/1`）。 */
+export interface AppManifest {
+  protocol: string;
+  /** `^[a-z0-9][a-z0-9_-]{0,63}$`。 */
+  id: string;
+  name: string;
+  /** 宽松 semver：`^\d+\.\d+\.\d+$`。 */
+  version: string;
+  description?: string;
+  source: AppManifestSource;
+  profile?: AppManifestProfile;
+  ui?: AppManifestUi;
+  hooks?: AppManifestHooks;
+  plugins?: AppManifestPlugin[];
+  sign?: AppManifestSign;
+}
+
+/** market 条目合并 AppManifest 后的元信息。 */
+export interface MarketEntry {
+  id: string;
+  name: string;
+  description: string;
+  /** 传给 installAgent 的 source（git URL 或本地目录）。 */
+  source: string;
+  version?: string;
+  tags?: string[];
+  /** 存在同 id AppManifest 时合并的 UI 宿主形式。 */
+  uiHost?: SkillUiHostKind;
+  /** 存在同 id AppManifest 时合并的 hooks。 */
+  hooks?: AppManifestHooks;
+  /** 是否由 AppManifest 驱动（可走 /api/market/:id/apply）。 */
+  appManifest?: boolean;
+}
+
+/** GET /api/market 的返回结构。 */
+export interface MarketResponse {
+  entries: MarketEntry[];
+  /** 面向用户的说明（例如 market/index.json 不存在时的降级提示）。 */
+  message: string;
+}
+
+/** App 编排动作。 */
+export type AppApplyMode = "install" | "update" | "uninstall" | "rollback";
+
+/** POST /api/market/:id/apply 请求体。 */
+export interface ApplyAppManifestRequest {
+  mode?: AppApplyMode;
+  confirm?: boolean;
+}
+
+/** 已安装 App 记录里的历史版本（用于 rollback）。 */
+export interface AppHistoryEntry {
+  version: string;
+  at: string;
+  /** 该版本时的 manifest 快照（env 已脱敏）。 */
+  manifest: AppManifest;
+  /** 该版本对应的 profile 备份 tar.gz 路径。 */
+  backupPath?: string;
+}
+
+/** `~/.24os/apps/<id>.json` 安装记录（env 明文永不落盘）。 */
+export interface InstalledAppRecord {
+  id: string;
+  name: string;
+  version: string;
+  installedAt: string;
+  updatedAt?: string;
+  /** 最近一次 profile 备份（uninstall/update 前产生）。 */
+  backupPath?: string;
+  /** 当前 manifest 快照（env 值已脱敏为 "***"）。 */
+  manifest: AppManifest;
+  /** 历史版本（最近一次在末尾），rollback 据此恢复。 */
+  history?: AppHistoryEntry[];
+}
+
+/** App 编排结果。 */
+export interface AppApplyResult {
+  ok: boolean;
+  mode: AppApplyMode;
+  id: string;
+  version: string;
+  /** 各步骤人类可读描述。 */
+  steps: string[];
+  /** 本次产生的备份路径。 */
+  backups: string[];
+  /** 实际分发到事件总线的 hooks。 */
+  hooks: AppHookName[];
+  /** 最近一次 profile 备份（若有）。 */
+  backupPath?: string;
+  /** 面向用户的中文说明。 */
+  message: string;
+}
+
+/* ------------------------------------------------------------------ *
  * M3 · Agent 配置编辑（模型 / 描述 / MCP / 环境变量）
  * ------------------------------------------------------------------ */
 
@@ -562,6 +817,15 @@ export interface UpdateAgentConfigRequest {
   confirm?: boolean;
 }
 
+/** POST /api/agents/:id/skills 请求体（skill 启停落盘到 meta.json）。 */
+export interface SetSkillEnabledRequest {
+  /** skill 名（须命中该 agent 已知 skill 的 id / name / 目录名，否则 400 INVALID_SKILL）。 */
+  name: string;
+  enabled: boolean;
+  /** 写操作必须显式 true，否则 CONFIRM_REQUIRED。 */
+  confirm?: boolean;
+}
+
 /** POST /api/agents/:id/mcp 请求体。 */
 export interface AddMcpServerRequest {
   name: string;
@@ -590,6 +854,7 @@ export type ConfigEditAction =
   | "remove-mcp"
   | "set-env"
   | "remove-env"
+  | "set-skill"
   | "restore-backup";
 
 /**
@@ -611,5 +876,77 @@ export interface ConfigEditResult {
   /** 写操作前生成的备份文件绝对路径。 */
   backups: string[];
   /** 面向用户的中文说明（不含密钥明文）。 */
+  message: string;
+}
+
+/* ------------------------------------------------------------------ *
+ * M7 · Hooks 执行日志 / Dashboard WS / Bot Mode
+ * ------------------------------------------------------------------ */
+
+/** 一次 hook 执行记录（内存环形缓冲，最多 100 条）。 */
+export interface HookLogEntry {
+  hook: AppHookName;
+  appId: string;
+  status: "ok" | "error";
+  /** ISO 时间。 */
+  at: string;
+  error?: string;
+}
+
+/** GET /api/hooks/log 响应。 */
+export interface HookLogResponse {
+  entries: HookLogEntry[];
+  total: number;
+}
+
+/** Dashboard WS 服务端→客户端事件（{type, at, payload}）。 */
+export interface DashboardEvent {
+  type: string;
+  at: string;
+  payload?: Record<string, unknown>;
+}
+
+/** Bot Mode 单条配置（bots.yaml）。 */
+export interface BotConfig {
+  /** `^[a-z0-9][a-z0-9_-]{0,63}$`。 */
+  id: string;
+  /** 每天 HH:MM（服务器本地时区），匹配 `^\d{2}:\d{2}$`。 */
+  schedule: string;
+  /** 目标 Hermes profile（缺省 default）。 */
+  profile?: string;
+  prompt: string;
+  /** 推送目标 plugin 名（来自已安装 app 的 plugins）。 */
+  notify?: string[];
+  /** 默认 true；`enabled:false` 或 `disable:true` 关闭。 */
+  enabled: boolean;
+}
+
+/** Bot 最近一次运行结果。 */
+export interface BotRunResult {
+  botId: string;
+  status: "ok" | "error";
+  at: string;
+  /** 输出长度（不广播正文）。 */
+  len?: number;
+  error?: string;
+}
+
+/** GET /api/bots 列表项。 */
+export interface BotListItem extends BotConfig {
+  /** 下次计划运行的 ISO 时间；enabled=false 时为 null。 */
+  nextRun: string | null;
+  /** 最近一次运行（内存）。 */
+  lastRun: BotRunResult | null;
+}
+
+/** GET /api/bots 响应。 */
+export interface BotsResponse {
+  bots: BotListItem[];
+  /** 调度器是否已启动（OS_BOT_ENABLED=1）。 */
+  schedulerRunning: boolean;
+  /** 配置文件路径。 */
+  file: string;
+  /** 最近运行日志（环形，最多 100）。 */
+  log: BotRunResult[];
   message: string;
 }

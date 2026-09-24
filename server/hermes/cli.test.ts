@@ -93,6 +93,17 @@ describe("resolveHermesCli", () => {
     expect(await resolveHermesCli("/custom/hermes")).toBe("/custom/hermes");
     expect(await resolveHermesCli(null)).toBeNull();
   });
+
+  it("OS_HERMES_CLI 指向不存在路径 → 不可用，不回退自动探测", async () => {
+    const saved = process.env.OS_HERMES_CLI;
+    process.env.OS_HERMES_CLI = "/nope/here";
+    try {
+      expect(await resolveHermesCli()).toBeNull();
+    } finally {
+      if (saved === undefined) delete process.env.OS_HERMES_CLI;
+      else process.env.OS_HERMES_CLI = saved;
+    }
+  });
 });
 
 describe("runHermes", () => {

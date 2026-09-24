@@ -1,6 +1,5 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import type {
   PanelSpec,
   SkillUiCapability,
@@ -9,6 +8,7 @@ import type {
 } from "@shared/types";
 import { SKILL_UI_CAPABILITIES } from "@shared/types";
 import { resolveActiveHomeSync } from "../hermes/detect";
+import { APP_ROOT } from "../paths";
 import { parsePanelYaml } from "./panel";
 
 /**
@@ -30,12 +30,8 @@ import { parsePanelYaml } from "./panel";
 
 const PROTOCOL = "24os-skill-ui/1";
 
-/** 仓库根目录（server/skillui/discover.ts → ../../）。 */
-const REPO_ROOT = path.resolve(
-  path.dirname(fileURLToPath(import.meta.url)),
-  "..",
-  "..",
-);
+/** 仓库根目录（统一由 server/paths.ts 解析，兼容源码 / 打包形态）。 */
+const REPO_ROOT = APP_ROOT;
 
 /** 目录读取，失败返回空数组（防御性）。 */
 function safeListDirs(dir: string): string[] {

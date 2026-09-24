@@ -17,9 +17,13 @@ export default defineConfig({
   server: {
     port: 5173,
     strictPort: false,
-    // 开发时把 /api 透传给本地 Fastify（也可直接用 http://localhost:4319）。
+    // 开发时把 /api 透传给本地 Fastify（含 WebSocket 升级，M7 Dashboard WS）。
     proxy: {
-      "/api": "http://localhost:4319",
+      "/api": {
+        target: "http://localhost:4319",
+        changeOrigin: true,
+        ws: true,
+      },
     },
   },
   build: {

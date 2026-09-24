@@ -10,13 +10,15 @@ import type {
   McpServer,
   McpServerSpec,
   SetEnvRequest,
+  SetSkillEnabledRequest,
   UpdateAgentConfigRequest,
   UpdateMcpServerRequest,
 } from "@shared/types";
 import { resolveHermesCli, runHermes } from "./cli";
 import { resolveHomeForCli } from "./detect";
 import { LifecycleError } from "./errors";
-import { extractMcpServers, extractModel, parseConfigObject } from "./profiles";
+import { invalidateAgentsCache } from "./index";
+import { extractMcpServers, extractModel, parseAgentDir, parseConfigObject } from "./profiles";
 
 /**
  * Agent 配置编辑层（M3）。
@@ -461,6 +463,67 @@ async function readMetaRaw(id: string, deps: ConfigEditDeps): Promise<Record<str
   }
 }
 
+/**
+ * 读取 agent 的工作台元数据 meta.json（缺失 / 损坏 / 非法 id 返回空对象）。
+ * 供路由层合并 description / tags / skills 启停状态。
+ */
+export async function readAgentMeta(
+  id: string,
+  deps: ConfigEditDeps = {},
+): Promise<Record<string, unknown>> {
+  try {
+    return await readMetaRaw(id, deps);
+  } catch {
+    return {};
+  }
+}
+
+/** meta.skills 的形状（{ <name>: { enabled?: boolean } }）。 */
+function metaSkillsOf(meta: Record<string, unknown>): Record<string, unknown> {
+  return isPlainObject(meta.skills) ? meta.skills : {};
+}
+
+/** 从 skill 记录里取 meta 启停状态（无记录返回 undefined）。 */
+export function skillMetaEnabled(
+  metaSkills: Record<string, unknown>,
+  skill: { id: string; name: string; path?: string },
+): boolean | undefined {
+  const candidates = [skill.id, skill.name];
+  if (skill.path) candidates.push(path.basename(skill.path));
+  for (const key of candidates) {
+    const record = metaSkills[key];
+    if (isPlainObject(record) && typeof record.enabled === "boolean") {
+      return record.enabled;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * 扫描所有 agent 的 meta.json，收集被标记 `enabled:false` 的 skill 名。
+ * 供 skill-uis 列表标注 `disabled:true`（重新启用后记录变 true，自然离开集合）。
+ */
+export async function listDisabledSkillNames(
+  deps: ConfigEditDeps = {},
+): Promise<Set<string>> {
+  const result = new Set<string>();
+  let entries: string[];
+  try {
+    entries = await readdir(resolveMetaRoot(deps.metaDir), { withFileTypes: true })
+      .then((list) => list.filter((entry) => entry.isDirectory()).map((entry) => entry.name))
+      .catch(() => [] as string[]);
+  } catch {
+    return result;
+  }
+  for (const id of entries) {
+    const meta = await readAgentMeta(id, deps);
+    for (const [name, record] of Object.entries(metaSkillsOf(meta))) {
+      if (isPlainObject(record) && record.enabled === false) result.add(name);
+    }
+  }
+  return result;
+}
+
 /* ------------------------------------------------------------------ *
  * 读取
  * ------------------------------------------------------------------ */
@@ -653,6 +716,7 @@ export async function updateAgentConfig(
     );
   }
 
+  invalidateAgentsCache();
   return {
     ok: true,
     action: "update-config",
@@ -692,6 +756,7 @@ export async function addMcpServer(
     deps,
   );
   if (cliOk) {
+    invalidateAgentsCache();
     return {
       ok: true,
       action: "add-mcp",
@@ -705,6 +770,7 @@ export async function addMcpServer(
   doc.setIn(["mcp_servers", name], spec);
   const acc: WriteAcc = { files: [], backups: [] };
   await writeWithBackup(agentId, file, doc.toString(), deps, acc);
+  invalidateAgentsCache();
   return {
     ok: true,
     action: "add-mcp",
@@ -745,6 +811,7 @@ export async function updateMcpServer(
     deps,
   );
   if (cliOk) {
+    invalidateAgentsCache();
     return {
       ok: true,
       action: "update-mcp",
@@ -758,6 +825,7 @@ export async function updateMcpServer(
   doc.setIn(["mcp_servers", serverName], spec);
   const acc: WriteAcc = { files: [], backups: [] };
   await writeWithBackup(agentId, file, doc.toString(), deps, acc);
+  invalidateAgentsCache();
   return {
     ok: true,
     action: "update-mcp",
@@ -797,6 +865,7 @@ export async function removeMcpServer(
     deps,
   );
   if (cliOk) {
+    invalidateAgentsCache();
     return {
       ok: true,
       action: "remove-mcp",
@@ -810,6 +879,7 @@ export async function removeMcpServer(
   doc.deleteIn(["mcp_servers", serverName]);
   const acc: WriteAcc = { files: [], backups: [] };
   await writeWithBackup(agentId, file, doc.toString(), deps, acc);
+  invalidateAgentsCache();
   return {
     ok: true,
     action: "remove-mcp",
@@ -865,6 +935,7 @@ export async function setEnvVar(
     deps,
   );
   if (cliOk) {
+    invalidateAgentsCache();
     return {
       ok: true,
       action: "set-env",
@@ -879,6 +950,7 @@ export async function setEnvVar(
   const raw = await readFile(envPath, "utf8").catch(() => "");
   await atomicWrite(envPath, upsertEnvLine(raw, key, input.value));
   acc.files.push(envPath);
+  invalidateAgentsCache();
   return {
     ok: true,
     action: "set-env",
@@ -906,6 +978,7 @@ export async function removeEnvVar(
   const selector = profileSelectorArgs(agentId, dir, deps);
   const cliOk = await tryCliConfig([...selector, "config", "unset", envKey], deps);
   if (cliOk) {
+    invalidateAgentsCache();
     return {
       ok: true,
       action: "remove-env",
@@ -919,6 +992,7 @@ export async function removeEnvVar(
   const acc: WriteAcc = { files: [], backups: [] };
   const raw = await readFile(envPath, "utf8").catch(() => "");
   await writeWithBackup(agentId, envPath, removeEnvLine(raw, envKey), deps, acc);
+  invalidateAgentsCache();
   return {
     ok: true,
     action: "remove-env",
@@ -994,6 +1068,7 @@ export async function restoreBackup(
   const content = await readFile(source, "utf8");
   const acc: WriteAcc = { files: [], backups: [] };
   await writeWithBackup(agentId, target, content, deps, acc);
+  invalidateAgentsCache();
   return {
     ok: true,
     action: "restore-backup",
@@ -1001,5 +1076,75 @@ export async function restoreBackup(
     files: acc.files,
     backups: acc.backups,
     message: `已从备份 ${name} 还原 ${path.basename(target)}。`,
+  };
+}
+
+/**
+ * Skill 启停落盘（M2 杂项）：写入工作台 meta.json 的
+ * `skills: { "<skill名>": { enabled: boolean } }`。
+ *
+ * 四重保证：confirm:true 门禁 → 备份 meta.json 到 ~/.24os/backups → 原子写 → 无密钥字段。
+ * skill 名必须命中该 agent 已知 skill（id / name / skills 目录名），否则 INVALID_SKILL。
+ * 恒为 via:"file"（非 Hermes 字段，无官方命令）。
+ */
+export async function setSkillEnabled(
+  id: string,
+  input: SetSkillEnabledRequest,
+  deps: ConfigEditDeps = {},
+): Promise<ConfigEditResult> {
+  requireConfirm(input.confirm);
+  const agentId = validateAgentId(id);
+  if (typeof input.enabled !== "boolean") {
+    throw new LifecycleError("INVALID_VALUE", "enabled 必须是布尔值。");
+  }
+  const requested = typeof input.name === "string" ? input.name.trim() : "";
+  if (!requested) {
+    throw new LifecycleError("INVALID_SKILL", "skill 名不能为空。");
+  }
+
+  const dir = resolveAgentDir(agentId, deps);
+  const known = parseAgentDir(agentId, dir).skills;
+  const match = known.find(
+    (skill) =>
+      skill.id === requested ||
+      skill.name === requested ||
+      (skill.path !== undefined && path.basename(skill.path) === requested),
+  );
+  if (!match) {
+    throw new LifecycleError(
+      "INVALID_SKILL",
+      `未知 skill：${requested}（不在 agent「${agentId}」的 skills 列表中）。`,
+    );
+  }
+
+  const meta = await readMetaRaw(agentId, deps);
+  const previousSkills = metaSkillsOf(meta);
+  const previousRecord = previousSkills[match.id];
+  const nextSkills: Record<string, unknown> = {
+    ...previousSkills,
+    [match.id]: {
+      ...(isPlainObject(previousRecord) ? previousRecord : {}),
+      enabled: input.enabled,
+    },
+  };
+  meta.skills = nextSkills;
+
+  const file = metaPathFor(agentId, deps);
+  const acc: WriteAcc = { files: [], backups: [] };
+  await writeWithBackup(
+    agentId,
+    file,
+    `${JSON.stringify(meta, null, 2)}\n`,
+    deps,
+    acc,
+  );
+  invalidateAgentsCache();
+  return {
+    ok: true,
+    action: "set-skill",
+    via: "file",
+    files: acc.files,
+    backups: acc.backups,
+    message: `skill「${match.id}」已${input.enabled ? "启用" : "禁用"}（via file）。`,
   };
 }

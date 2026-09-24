@@ -1,0 +1,35 @@
+protocol: 24os-appmanifest/1
+id: ppt-maker
+name: PPT 制作
+version: 1.0.0
+description: 选模板、填主题，一键生成 PPT
+source:
+  type: builtin
+  path: examples/skills/ppt
+profile:
+  template: default
+  model:
+    default: kimi-k2.5
+  mcp:
+    - name: filesystem
+      config:
+        command: npx
+        args: ["-y", "@modelcontextprotocol/server-filesystem"]
+  env:
+    MY_API_KEY: ""
+  skills:
+    - ppt
+ui:
+  skillId: ppt
+  host: iframe
+hooks:
+  oninstall: [ui.open]
+  onupdate: []
+  ondelete: []
+plugins:
+  - name: ops-push
+    kind: http
+    endpoint: ""
+    envKey: REPORT_WEBHOOK
+sign:
+  sha256: ""

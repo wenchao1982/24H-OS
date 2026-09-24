@@ -11,6 +11,7 @@ import type {
 } from "@shared/types";
 import { resolveHermesCli, runHermes, type HermesCommandResult } from "./cli";
 import { LifecycleError } from "./errors";
+import { invalidateAgentsCache } from "./index";
 
 /**
  * Agent 生命周期层（M2-core）。
@@ -155,7 +156,9 @@ export async function installAgent(
   if (input.alias) args.push("--alias");
 
   const result = await runHermes(args, runOptions(deps, input.dryRun));
-  return toLifecycleResult("install", result, input.dryRun);
+  const lifecycle = toLifecycleResult("install", result, input.dryRun);
+  if (!input.dryRun) invalidateAgentsCache();
+  return lifecycle;
 }
 
 /** 更新 agent。 */
@@ -173,7 +176,9 @@ export async function updateAgent(
     ["profile", "update", agentId],
     runOptions(deps, input.dryRun),
   );
-  return toLifecycleResult("update", result, input.dryRun);
+  const lifecycle = toLifecycleResult("update", result, input.dryRun);
+  if (!input.dryRun) invalidateAgentsCache();
+  return lifecycle;
 }
 
 /** 导出（备份）agent profile 为 tar.gz。 */
@@ -208,7 +213,9 @@ export async function backupAgent(
     );
   }
 
-  return toLifecycleResult("backup", result, deps.dryRun, backupPath);
+  const lifecycle = toLifecycleResult("backup", result, deps.dryRun, backupPath);
+  if (!deps.dryRun) invalidateAgentsCache();
+  return lifecycle;
 }
 
 /** 删除 agent（默认先备份，备份失败则中止）。 */
@@ -274,5 +281,7 @@ export async function deleteAgent(
   }
 
   const result = await runHermes(["profile", "delete", agentId], runOptions(deps));
-  return toLifecycleResult("delete", result, false, actualBackupPath);
+  const lifecycle = toLifecycleResult("delete", result, false, actualBackupPath);
+  invalidateAgentsCache();
+  return lifecycle;
 }

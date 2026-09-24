@@ -6,25 +6,35 @@ import type {
   AgentConfig,
   AgentsResponse,
   ApiError,
+  AppApplyMode,
+  AppApplyResult,
+  AppManifest,
+  ApplyAppManifestRequest,
   ConfigEditResult,
   DeleteAgentRequest,
   InstallAgentRequest,
   LifecycleResult,
   MarketResponse,
   SetEnvRequest,
+  SetSkillEnabledRequest,
   Skill,
   UpdateAgentConfigRequest,
   UpdateAgentRequest,
   UpdateMcpServerRequest,
 } from "@shared/types";
+import { applyAppManifest, type ApplyAppDeps } from "../appmanifest/apply";
+import { readInstalledApp } from "../appmanifest/store";
 import { getSnapshot, refreshSnapshot } from "../hermes";
 import {
   addMcpServer,
   readAgentConfig,
+  readAgentMeta,
   removeEnvVar,
   removeMcpServer,
   restoreBackup,
   setEnvVar,
+  setSkillEnabled,
+  skillMetaEnabled,
   updateAgentConfig,
   updateMcpServer,
 } from "../hermes/configEdit";
@@ -35,7 +45,7 @@ import {
   installAgent,
   updateAgent,
 } from "../hermes/lifecycle";
-import { readMarket } from "../market";
+import { readMarket, readMarketAppManifest } from "../market";
 import { buildSkillUiIndex } from "../skillui/discover";
 
 /**
@@ -44,16 +54,56 @@ import { buildSkillUiIndex } from "../skillui/discover";
  *
  * M4：给每个 skill 富化 hasUi / uiId（若发现对应 ui/manifest.json）。
  * M2-core：新增生命周期（install / update / delete / backup）与 /api/market。
+ * M2 杂项：列表/详情合并 meta.json 的 description/tags/skills 启停；
+ *          POST /api/agents/:id/skills 启停落盘。
  */
 
 /** 单次请求内复用的 UI 索引，避免逐 skill 重复扫描磁盘。 */
-function enrichAgentSkills(agent: Agent, index: Map<string, string>): Agent {
+function enrichAgentSkills(
+  agent: Agent,
+  index: Map<string, string>,
+  metaSkills: Record<string, unknown>,
+): Agent {
   return {
     ...agent,
     skills: agent.skills.map((skill) => {
-      const uiId = lookupUiId(skill, index);
-      return uiId ? { ...skill, hasUi: true, uiId } : skill;
+      const enabled = skillMetaEnabled(metaSkills, skill);
+      const base: Skill =
+        enabled === undefined
+          ? { ...skill, enabled: skill.enabled ?? true }
+          : { ...skill, enabled };
+      const uiId = lookupUiId(base, index);
+      return uiId ? { ...base, hasUi: true, uiId } : base;
     }),
+  };
+}
+
+/**
+ * 合并工作台 meta.json 到 agent（列表与详情共用，优先级一致）：
+ *   - description：meta 非空字符串覆盖 config 内描述；无 meta / 空串保持现状；
+ *   - tags：meta.tags 存在（数组）则采用；无 meta 时缺省（config 本身无 tags）；
+ *   - skills[].enabled：meta.skills.<name>.enabled 覆盖；无记录默认 true。
+ */
+async function enrichAgent(
+  agent: Agent,
+  index: Map<string, string>,
+): Promise<Agent> {
+  const meta = await readAgentMeta(agent.id);
+  const metaDescription =
+    typeof meta.description === "string" && meta.description.length > 0
+      ? meta.description
+      : agent.description;
+  const tags = Array.isArray(meta.tags)
+    ? meta.tags.filter((tag): tag is string => typeof tag === "string")
+    : undefined;
+  const metaSkills =
+    meta.skills && typeof meta.skills === "object" && !Array.isArray(meta.skills)
+      ? (meta.skills as Record<string, unknown>)
+      : {};
+  return {
+    ...enrichAgentSkills(agent, index, metaSkills),
+    description: metaDescription,
+    ...(tags ? { tags } : {}),
   };
 }
 
@@ -127,17 +177,17 @@ async function runConfigMutation<T>(
 }
 
 export async function agentRoutes(app: FastifyInstance): Promise<void> {
-  // GET /api/agents —— agent 列表 + Hermes 状态（skills 富化 hasUi/uiId）。
+  // GET /api/agents —— agent 列表 + Hermes 状态（合并 meta description/tags + skills 启停 + hasUi/uiId）。
   app.get("/api/agents", async (): Promise<AgentsResponse> => {
     const snapshot = await getSnapshot();
     const index = buildSkillUiIndex();
-    return {
-      ...snapshot,
-      agents: snapshot.agents.map((agent) => enrichAgentSkills(agent, index)),
-    };
+    const agents = await Promise.all(
+      snapshot.agents.map((agent) => enrichAgent(agent, index)),
+    );
+    return { ...snapshot, agents };
   });
 
-  // GET /api/agents/:id —— 单个 agent 详情。
+  // GET /api/agents/:id —— 单个 agent 详情（与列表同样的 meta 合并优先级）。
   app.get<{ Params: { id: string } }>(
     "/api/agents/:id",
     async (request, reply): Promise<Agent | ApiError> => {
@@ -149,7 +199,7 @@ export async function agentRoutes(app: FastifyInstance): Promise<void> {
         reply.code(404);
         return { error: "AGENT_NOT_FOUND", message: `未找到 agent：${id}` };
       }
-      return enrichAgentSkills(agent, buildSkillUiIndex());
+      return enrichAgent(agent, buildSkillUiIndex());
     },
   );
 
@@ -275,6 +325,140 @@ export async function agentRoutes(app: FastifyInstance): Promise<void> {
     );
   });
 
-  // GET /api/market —— 可安装的 distribution 列表（静态 stub）。
+  // POST /api/agents/:id/skills —— skill 启停落盘（meta.json，四重保证）。
+  app.post<{ Params: { id: string }; Body: SetSkillEnabledRequest }>(
+    "/api/agents/:id/skills",
+    async (request, reply): Promise<ConfigEditResult | ApiError> => {
+      const body = (request.body ?? {}) as SetSkillEnabledRequest;
+      return runConfigMutation(reply, () =>
+        setSkillEnabled(request.params.id, body),
+      );
+    },
+  );
+
+  // GET /api/market —— 可安装 distribution 列表（合并 AppManifest 元信息）。
   app.get("/api/market", async (): Promise<MarketResponse> => readMarket());
+
+  /* ---------------- M6 · AppManifest 编排 ---------------- */
+
+  // GET /api/market/apps/:id —— 解析后的 AppManifest。
+  app.get<{ Params: { id: string } }>(
+    "/api/market/apps/:id",
+    async (request, reply): Promise<AppManifest | ApiError> => {
+      const manifest = readMarketAppManifest(request.params.id);
+      if (!manifest) {
+        reply.code(404);
+        return {
+          error: "APP_NOT_FOUND",
+          message: `未找到 AppManifest：${request.params.id}`,
+        };
+      }
+      return manifest;
+    },
+  );
+
+  // POST /api/market/:id/apply —— install / update / uninstall / rollback。
+  app.post<{ Params: { id: string }; Body: ApplyAppManifestRequest }>(
+    "/api/market/:id/apply",
+    async (request, reply): Promise<AppApplyResult | ApiError> => {
+      const body = (request.body ?? {}) as ApplyAppManifestRequest;
+      const id = request.params.id;
+      const mode = body.mode ?? "install";
+      const allowed: AppApplyMode[] = [
+        "install",
+        "update",
+        "uninstall",
+        "rollback",
+      ];
+      if (!allowed.includes(mode)) {
+        reply.code(400);
+        return {
+          error: "INVALID_VALUE",
+          message: `非法 mode：${String(mode)}（需为 ${allowed.join(" | ")}）`,
+        };
+      }
+
+      // uninstall / rollback 用已装记录里的 manifest（无需市场源）；
+      // install / update 从 market/apps 解析。
+      let manifest = readMarketAppManifest(id);
+      if (!manifest && (mode === "uninstall" || mode === "rollback")) {
+        const record = await readInstalledApp(id);
+        if (record?.manifest) manifest = record.manifest;
+      }
+      if (!manifest) {
+        reply.code(404);
+        return {
+          error: "APP_NOT_FOUND",
+          message: `未找到 AppManifest：${id}`,
+        };
+      }
+
+      try {
+        const result = await applyAppManifest(
+          manifest,
+          { mode, confirm: body.confirm },
+          applyDepsFromEnv(),
+        );
+        await refreshSnapshot().catch(() => undefined);
+        return result;
+      } catch (error) {
+        if (error instanceof LifecycleError) {
+          reply.code(statusForCode(error.code));
+          return { error: error.code, message: error.message };
+        }
+        throw error;
+      }
+    },
+  );
+
+  // POST /api/agents/install —— 兼容入口。
+  // body.type === "market" && body.id → 委托 AppManifest apply；
+  // 否则等价于原 POST /api/agents（installAgent）。
+  app.post<{
+    Body: InstallAgentRequest & { type?: string; id?: string; mode?: AppApplyMode };
+  }>("/api/agents/install", async (request, reply): Promise<unknown> => {
+    const body = (request.body ?? {}) as InstallAgentRequest & {
+      type?: string;
+      id?: string;
+      mode?: AppApplyMode;
+    };
+
+    if (body.type === "market" && body.id) {
+      const mode = body.mode ?? "install";
+      let manifest = readMarketAppManifest(body.id);
+      if (!manifest && (mode === "uninstall" || mode === "rollback")) {
+        const record = await readInstalledApp(body.id);
+        if (record?.manifest) manifest = record.manifest;
+      }
+      if (!manifest) {
+        reply.code(404);
+        return {
+          error: "APP_NOT_FOUND",
+          message: `未找到 AppManifest：${body.id}`,
+        };
+      }
+      try {
+        const result = await applyAppManifest(
+          manifest,
+          { mode, confirm: body.confirm },
+          applyDepsFromEnv(),
+        );
+        await refreshSnapshot().catch(() => undefined);
+        return result;
+      } catch (error) {
+        if (error instanceof LifecycleError) {
+          reply.code(statusForCode(error.code));
+          return { error: error.code, message: error.message };
+        }
+        throw error;
+      }
+    }
+
+    return runLifecycle(reply, () => installAgent(body));
+  });
+}
+
+/** 从环境变量组装 apply 依赖（测试经 env 注入临时目录）。 */
+function applyDepsFromEnv(): ApplyAppDeps {
+  return {};
 }

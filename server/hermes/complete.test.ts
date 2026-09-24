@@ -51,6 +51,31 @@ describe("completePrompt —— 降级链", () => {
     expect(fake.calls()[0]).toEqual(["-p", "writer", "-z", "任务"]);
   });
 
+  it("oneshot 透传 model：-m <model> -z <prompt>（hermes -z 顶层 --model）", async () => {
+    const result = await completePrompt("hi", {
+      model: "anthropic/claude-x",
+      resolveCliPath: async () => fake.cliPath,
+      gatewayComplete: async () => {
+        throw new Error("no gateway");
+      },
+    });
+    expect(result.via).toBe("oneshot");
+    expect(fake.calls()[0]).toEqual(["-m", "anthropic/claude-x", "-z", "hi"]);
+  });
+
+  it("oneshot 同时透传 profile + model", async () => {
+    const result = await completePrompt("hi", {
+      profile: "writer",
+      model: "m1",
+      resolveCliPath: async () => fake.cliPath,
+      gatewayComplete: async () => {
+        throw new Error("no gateway");
+      },
+    });
+    expect(result.via).toBe("oneshot");
+    expect(fake.calls()[0]).toEqual(["-p", "writer", "-m", "m1", "-z", "hi"]);
+  });
+
   it("无 CLI → stub", async () => {
     const result = await completePrompt("nothing", {
       resolveCliPath: async () => null,

@@ -12,6 +12,7 @@ import type {
   SkillUiInfo,
 } from "@shared/types";
 import { findSkillUi } from "./discover";
+import { isSkillDisabled } from "./disabled";
 import { exportPptx } from "./tools";
 import { completePrompt, type CompleteResult } from "../hermes/complete";
 import { streamPrompt } from "../hermes/chat";
@@ -229,6 +230,12 @@ export async function invokeSkill(
   const skill = findSkillUi(skillId);
   if (!skill) {
     return fail(404, "SKILL_UI_NOT_FOUND", `未找到带 UI 的 skill：${skillId}`);
+  }
+
+  // 启停门禁：任一 agent meta 标 enabled:false → 403 SKILL_DISABLED
+  // （与 GET /api/skill-uis 的 disabled 聚合同口径；命令式与声明式都拦）。
+  if (await isSkillDisabled(skill)) {
+    return fail(403, "SKILL_DISABLED", `skill 已被禁用：${skillId}`);
   }
 
   if (!hasCapability(skill, method)) {

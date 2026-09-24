@@ -154,27 +154,28 @@ export default function AgentDetail({
         </h2>
         {agent.skills.length > 0 ? (
           <ul className="struct-list">
-            {agent.skills.map((skill) => (
-              <li key={skill.id} className="struct-item">
-                <span className="struct-name">{skill.name}</span>
-                {skill.description && (
-                  <span className="struct-desc">{skill.description}</span>
-                )}
-                {skill.path && <code className="struct-meta">{skill.path}</code>}
-                {skill.enabled === false && (
-                  <span className="struct-off">disabled</span>
-                )}
-                {skill.hasUi && skill.uiId && (
-                  <button
-                    type="button"
-                    className="btn-skill-ui"
-                    onClick={() => onOpenSkillUi?.(skill.uiId as string)}
-                  >
-                    打开 Skill UI
-                  </button>
-                )}
-              </li>
-            ))}
+            {agent.skills.map((skill) => {
+              const disabled = skill.enabled === false;
+              return (
+                <li key={skill.id} className="struct-item">
+                  <span className="struct-name">{skill.name}</span>
+                  {skill.description && (
+                    <span className="struct-desc">{skill.description}</span>
+                  )}
+                  {skill.path && <code className="struct-meta">{skill.path}</code>}
+                  {disabled && <span className="struct-off">已禁用</span>}
+                  {skill.hasUi && skill.uiId && !disabled && (
+                    <button
+                      type="button"
+                      className="btn-skill-ui"
+                      onClick={() => onOpenSkillUi?.(skill.uiId as string)}
+                    >
+                      打开 Skill UI
+                    </button>
+                  )}
+                </li>
+              );
+            })}
           </ul>
         ) : (
           <p className="hint">未配置 skill。</p>

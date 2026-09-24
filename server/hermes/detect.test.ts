@@ -8,6 +8,7 @@ import {
   isValidHermesHome,
   listHermesHomes,
   resolveActiveHome,
+  resolveActiveHomeSync,
   resolveCliHome,
   resolveCliPath,
   resolveCliPathSync,
@@ -136,6 +137,40 @@ describe("resolveCliPath —— CLI 候选顺序", () => {
     expect(resolved.cliPath).toBeNull();
     expect(resolved.cliSource).toBeNull();
   });
+
+  it("OS_HERMES_CLI=/nope/here → CLI 不可用且不回退 PATH（env 即停）", async () => {
+    const home = makeTemp("24os-detect-home-");
+    const binDir = makeTemp("24os-detect-bin-");
+    // PATH 上有可执行的 hermes——显式 env 无效时不允许命中它。
+    writeFakeCli(path.join(binDir, "hermes"));
+
+    const resolved = await resolveCliPath({
+      homeDir: home,
+      env: { OS_HERMES_CLI: "/nope/here", PATH: binDir },
+    });
+    expect(resolved.cliPath).toBeNull();
+    expect(resolved.cliSource).toBe("env");
+
+    const sync = resolveCliPathSync({
+      homeDir: home,
+      env: { OS_HERMES_CLI: "/nope/here", PATH: binDir },
+    });
+    expect(sync).toEqual({ cliPath: null, cliSource: "env" });
+  });
+
+  it("OS_HERMES_CLI 有效时仍优先（env），不看 PATH", async () => {
+    const home = makeTemp("24os-detect-home-");
+    const binDir = makeTemp("24os-detect-bin-");
+    writeFakeCli(path.join(binDir, "hermes"));
+    const cli = writeFakeCli(path.join(home, "custom", "hermes"));
+
+    const resolved = await resolveCliPath({
+      homeDir: home,
+      env: { OS_HERMES_CLI: cli, PATH: binDir },
+    });
+    expect(resolved.cliPath).toBe(cli);
+    expect(resolved.cliSource).toBe("env");
+  });
 });
 
 describe("hermes home 探测", () => {
@@ -185,6 +220,45 @@ describe("hermes home 探测", () => {
     expect(
       resolveActiveHome({ homeDir: home, env: { PATH: "/nonexistent" } }),
     ).toBe(desktop);
+  });
+
+  it("resolveActiveHome：env 指定的 home 不存在时无效即停，不静默换家", () => {
+    const home = makeTemp("24os-detect-home-");
+    // 即使 ~/.hermes 有效，显式 HERMES_HOME 指向不存在目录时也不回退。
+    const dotHermes = path.join(home, ".hermes");
+    mkdirSync(dotHermes, { recursive: true });
+    writeFileSync(path.join(dotHermes, "config.yaml"), "model: x\n", "utf8");
+
+    expect(
+      resolveActiveHome({
+        homeDir: home,
+        env: { HERMES_HOME: path.join(home, "missing-home"), PATH: "/nonexistent" },
+      }),
+    ).toBe(path.join(home, "missing-home"));
+  });
+
+  it("resolveActiveHomeSync：OS_HERMES_CLI 无效时不采用其它 CLI 的 home", () => {
+    const home = makeTemp("24os-detect-home-");
+    // PATH 上有包装脚本声明的 home——显式 OS_HERMES_CLI 无效时不得读取它。
+    const pathHome = path.join(home, "path-hermes-home");
+    mkdirSync(pathHome, { recursive: true });
+    writeFileSync(path.join(pathHome, "config.yaml"), "model: path\n", "utf8");
+    const binDir = makeTemp("24os-detect-bin-");
+    const pathCli = path.join(binDir, "hermes");
+    writeFileSync(
+      pathCli,
+      `#!/usr/bin/env bash\nexport HERMES_HOME="${pathHome}"\n`,
+      "utf8",
+    );
+    chmodSync(pathCli, 0o755);
+
+    // 无显式 home env、OS_HERMES_CLI 无效 → CLI home 链停止，回退默认候选（无有效候选时为 ~/.hermes）。
+    expect(
+      resolveActiveHomeSync({
+        homeDir: home,
+        env: { OS_HERMES_CLI: "/nope/here", PATH: binDir },
+      }),
+    ).toBe(path.join(home, ".hermes"));
   });
 });
 
@@ -281,5 +355,26 @@ describe("detectHermes —— 集成", () => {
       env: { PATH: "/nonexistent", HERMES_HOME: dotHermesAbs },
     });
     expect(det2.activeHome).toBe(dotHermesAbs);
+  });
+
+  it("OS_HERMES_CLI 无效 → CLI 不可用（cliSource:env）且有有效 home 仍 live", async () => {
+    const home = makeTemp("24os-detect-home-");
+    const binDir = makeTemp("24os-detect-bin-");
+    writeFakeCli(path.join(binDir, "hermes"), "hermes 9.9.9"); // PATH 上有 hermes，不得回退命中。
+
+    const dotHermes = path.join(home, ".hermes");
+    mkdirSync(dotHermes, { recursive: true });
+    writeFileSync(path.join(dotHermes, "config.yaml"), "model: demo\n", "utf8");
+
+    const det = await detectHermes({
+      homeDir: home,
+      env: { OS_HERMES_CLI: "/nope/here", PATH: binDir },
+    });
+    expect(det.cliFound).toBe(false);
+    expect(det.cliPath).toBeNull();
+    expect(det.cliSource).toBe("env");
+    expect(det.version).toBeNull();
+    expect(det.activeHome).toBe(dotHermes);
+    expect(decideMode(det)).toBe("live"); // 无 CLI 但有有效 home → 仍 live（既有规则）。
   });
 });

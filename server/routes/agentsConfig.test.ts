@@ -40,6 +40,13 @@ beforeEach(async () => {
     "utf8",
   );
   writeFileSync(path.join(profileDir, ".env"), "EXISTING=1\n", "utf8");
+  // 已知 skill（skills 目录兜底）。
+  mkdirSync(path.join(profileDir, "skills", "alpha"), { recursive: true });
+  writeFileSync(path.join(profileDir, "skills", "alpha", "SKILL.md"), "# alpha\n", "utf8");
+  // 第二个无 meta 的 agent（验证无 meta 时行为不变）。
+  const otherDir = path.join(hermesHome, "profiles", "agent-2");
+  mkdirSync(otherDir, { recursive: true });
+  writeFileSync(path.join(otherDir, "config.yaml"), "model: other\n", "utf8");
 
   // 保存并设置隔离环境。
   for (const key of [
@@ -163,5 +170,106 @@ describe("POST /api/agents/:id/env", () => {
     expect(readFileSync(path.join(hermesHome, "profiles/agent-1/.env"), "utf8")).toContain(
       "NEW_SECRET=supersecretvalue",
     );
+  });
+});
+
+describe("POST /api/agents/:id/skills —— skill 启停落盘（M2 杂项）", () => {
+  const metaFile = () => path.join(metaDir, "agent-1", "meta.json");
+
+  it("未 confirm → 400 CONFIRM_REQUIRED，且不写盘", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/agents/agent-1/skills",
+      payload: { name: "alpha", enabled: false },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toBe("CONFIRM_REQUIRED");
+    expect(existsSync(metaFile())).toBe(false);
+  });
+
+  it("confirm 后写入 meta.skills 并生成备份；详情合并 enabled", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/agents/agent-1/skills",
+      payload: { name: "alpha", enabled: false, confirm: true },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.ok).toBe(true);
+    expect(body.action).toBe("set-skill");
+    expect(body.via).toBe("file");
+    expect(body.backups.length).toBeGreaterThanOrEqual(0);
+
+    const meta = JSON.parse(readFileSync(metaFile(), "utf8")) as {
+      skills?: Record<string, { enabled?: boolean }>;
+    };
+    expect(meta.skills?.alpha?.enabled).toBe(false);
+
+    const detail = await app.inject({ method: "GET", url: "/api/agents/agent-1" });
+    expect(detail.statusCode).toBe(200);
+    const alpha = detail
+      .json<{ skills: Array<{ id: string; enabled?: boolean }> }>()
+      .skills.find((skill) => skill.id === "alpha");
+    expect(alpha?.enabled).toBe(false);
+
+    // 重新启用 → 恢复。
+    const re = await app.inject({
+      method: "POST",
+      url: "/api/agents/agent-1/skills",
+      payload: { name: "alpha", enabled: true, confirm: true },
+    });
+    expect(re.statusCode).toBe(200);
+    const detail2 = await app.inject({ method: "GET", url: "/api/agents/agent-1" });
+    const alpha2 = detail2
+      .json<{ skills: Array<{ id: string; enabled?: boolean }> }>()
+      .skills.find((skill) => skill.id === "alpha");
+    expect(alpha2?.enabled).toBe(true);
+  });
+
+  it("未知 skill 名 → 400 INVALID_SKILL", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/agents/agent-1/skills",
+      payload: { name: "nope-skill", enabled: false, confirm: true },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toBe("INVALID_SKILL");
+    expect(existsSync(metaFile())).toBe(false);
+  });
+
+  it("列表合并 meta description/tags；无 meta 的 agent 行为不变", async () => {
+    await app.inject({
+      method: "PATCH",
+      url: "/api/agents/agent-1/config",
+      payload: { description: "工作台描述 X", tags: ["t1"], confirm: true },
+    });
+
+    const res = await app.inject({ method: "GET", url: "/api/agents" });
+    expect(res.statusCode).toBe(200);
+    const agents = res.json<{
+      agents: Array<{ id: string; description: string; tags?: string[] }>;
+    }>().agents;
+    const withMeta = agents.find((agent) => agent.id === "agent-1");
+    const withoutMeta = agents.find((agent) => agent.id === "agent-2");
+    expect(withMeta?.description).toBe("工作台描述 X");
+    expect(withMeta?.tags).toEqual(["t1"]);
+    // 无 meta → 保持 config 内描述，无 tags 字段。
+    expect(withoutMeta?.description).toBe("Hermes profile「agent-2」");
+    expect(withoutMeta?.tags).toBeUndefined();
+  });
+
+  it("禁用后详情 skills 标 enabled:false；未记录的 skill 默认 true", async () => {
+    await app.inject({
+      method: "POST",
+      url: "/api/agents/agent-1/skills",
+      payload: { name: "alpha", enabled: false, confirm: true },
+    });
+    const res = await app.inject({ method: "GET", url: "/api/agents/agent-1" });
+    const skills = res.json<{ skills: Array<{ id: string; enabled?: boolean }> }>().skills;
+    expect(skills.find((skill) => skill.id === "alpha")?.enabled).toBe(false);
+    // skills 目录里只有 alpha；若还有其它 skill 则默认 true。
+    for (const skill of skills) {
+      if (skill.id !== "alpha") expect(skill.enabled).toBe(true);
+    }
   });
 });

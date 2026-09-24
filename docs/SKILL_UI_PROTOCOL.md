@@ -99,6 +99,46 @@
 
   流结束后宿主再向原请求 `id` 回一个汇总响应 `{ ok: true, result: { status } }`。
 
+- **宿主 → UI / 宿主 UI（M5 交互式审批与澄清）**：SSE 流为 `interactive` 模式。
+  `approval` / `clarify` 事件携带 `{ chatId, id, choices?, prompt? }`
+  （`id` = gateway 服务端请求 id；`prompt` = 展示文案/问题）。
+  宿主（SkillHost 调试区旁 / DeclarativePanel 输出区）渲染决策卡片：
+  approval → **once / session / always / deny** 按钮（若事件带 `choices` 则以
+  gateway 透传的更细选项为准）；clarify → 输入框 + 选项 chip + 发送。
+  点选 → `POST /api/hermes/chat/decide` body
+  `{ chatId, type: "approval"|"clarify", choice?, answer? }` → 服务端
+  `decideApproval` 把 pending 的 server 请求 `respond` 回 gateway，流继续。
+  - `autoDecided: true`（`OS_GATEWAY_AUTO_APPROVE=1` 或非交互流）：已自动处理，UI 不渲染按钮；
+  - 超时 / 流结束仍 pending → 服务端按安全默认兜底（approval→`deny`、clarify→空答案），
+    并发出 `session` 事件 `decision.fallback`（payload 含 `reason: timeout|stream_end`）；
+  - decide 错误码：`400 INVALID_VALUE` · `404 CHAT_NOT_FOUND`（未知/已结束）·
+    `409 DECISION_RESOLVED`（已决）。
+  - **昂贵模型确认不是 approval/clarify**：以 `session/model.confirm_required` 事件 + 宿主
+    `Modal` 呈现，确认后带 `force:true` **重试 SSE**（不经 `chat/decide`）。
+
+- **模型下拉（M5）+ 昂贵模型二次确认（收尾）**：SkillHost / DeclarativePanel 输出工具栏提供模型选择
+  （选项 = `GET /api/agents/:id` 的 `model`，无 agent 上下文时回退 `GET /api/agents`
+  去重列表 + 自由文本）。SSE body 可带 `model?` → `session.create` 的 `model`
+  参数 + 随后经 `config.set key:"model"` 走官方 selection guard，对**后续 prompt（新会话）生效**；
+  live 会话热切同样走 `config.set`（契约：`contracts/config_free_tier_control.py` +
+  `methods_config_set.py::_set_model`，服务端 `switchSessionModel` 封装）。
+  `hermes -z` 降级链同步支持 `-m/--model`。
+
+  **昂贵模型确认（不静默放行）**：契约二次确认键为 **`confirm_expensive_model`**
+  （`ConfigSetParams`；Params `extra=forbid`，工作台对外的 `force` 映射为该键；
+  CLI `config set --force` 仅跳过 unknown-key 提示，与昂贵模型无关）。
+  - 不带 `force` 且非 `OS_GATEWAY_AUTO_APPROVE=1`：昂贵模型 → `confirm_required` →
+    SSE 透出 `session/model.confirm_required` 事件
+    （payload `{ model, confirmRequired, confirmMessage }`）并以 `interrupted` 结束
+    （**不提交 prompt**）；
+  - 宿主（SkillHost / DeclarativePanel）收到该事件 → 复用 `Modal` 弹「昂贵模型确认」
+    （展示 `confirmMessage` + 取消/确认）；
+  - **确认** → 以 SSE body `{ ..., force: true }` 重试（服务端 → `confirm_expensive_model:true` 放行）；
+  - **取消** → 提示「已取消昂贵模型确认，模型未切换」（iframe 路径回
+    `MODEL_CONFIRM_CANCELLED` 错误码）；
+  - `OS_GATEWAY_AUTO_APPROVE=1` → 与审批策略一致**自动 force**，不打断 UI。
+  模型昂贵确认**不经** `chat/decide`（该端点仅 approval/clarify），重试通道是 SSE body `force`。
+
 宿主侧校验：
 
 1. `event.source === iframe.contentWindow`；
@@ -118,12 +158,38 @@
 | `emitEvent` | — | no-op，返回 `{ ok: true }`。 |
 | `resize` | — | 返回 `{ ok: true }`（宿主可据此调整容器尺寸）。 |
 
-**`chatStream` 审批策略（安全默认）**：gateway 的 `approval` / `clarify` 服务端请求默认回
-`deny` / 空答案（跳过）；仅当环境变量 `OS_GATEWAY_AUTO_APPROVE=1` 时回 `once` / 第一个选项。
+**`chatStream` 审批策略（M5 交互式 + 安全默认）**：
+- `OS_GATEWAY_AUTO_APPROVE=1` → 立即回 `once` / 第一个选项（事件仍透出，`autoDecided:true`，不打断 UI）；
+- SSE（`interactive:true`）→ 挂起等待 `POST /api/hermes/chat/decide`；
+- 其他非交互通道（REST broker）→ 立即回安全默认 `deny` / 空答案；
+- 交互流超时 / 结束仍 pending → 自动安全默认兜底 + `decision.fallback` 事件。
 无论决策如何，该事件都会先透出给 UI。
+
+**subagent（M5 研究结论）**：gateway v0.21.3 契约存在观测/控制方法
+（`subagent.list/interrupt/tail/steer`、`delegation.status/pause`、`spawn_tree.*`）
+与 `subagent.*` 事件，但**未暴露直接 spawn/run 的 RPC**（无 `subagent.spawn` /
+`task.spawn` / `delegate.*`；子代理由父会话内 `delegate_task` 工具启动）。
+`POST /api/hermes/subagent`（`confirm:true` 门禁）当前返回 `501 UNSUPPORTED`
++ 研究结论，**不造假调模型**；待官方 spawn 契约。
 
 **双重门禁**：方法必须同时在 `capabilities` 与对应 `permissions` 中声明；
 任一缺失，broker 返回 `403 FORBIDDEN`。
+
+**启停门禁（`SKILL_DISABLED`）**：被任一 agent 的 `~/.24os/agents/<id>/meta.json`
+标记 `skills.<name>.enabled === false` 的 skill，**三条路径统一 403**（判定
+`server/skillui/disabled.ts#isSkillDisabled`，与 `GET /api/skill-uis` 的 `disabled`
+聚合同口径、每次读盘）：
+
+| 路径 | 禁用时 | 不存在 / 缺文件时 |
+| --- | --- | --- |
+| `POST /api/skill-host/invoke`（broker，iframe + declarative） | **403 `SKILL_DISABLED`** | skill 不存在 → 404 |
+| `GET /api/skill-uis/:id/panel` | **403 `SKILL_DISABLED`** | 未找到/非声明式 → 404 `PANEL_NOT_FOUND` |
+| `GET /skill-ui/:id/*`（静态，iframe + declarative） | **403 `SKILL_DISABLED`**（任意路径） | skill 不存在 → 404；启用但文件缺失/越界 → 404 |
+
+静态/panel 口径选择：**先判 skill 存在（findSkillUi），再判禁用，最后判文件**。
+存在性已由 `GET /api/skill-uis` 列表公开，403 不泄露额外信息，且能与「文件不存在」
+明确区分（便于测试与排障）。重新启用（`enabled:true` 或移除记录）后立即恢复
+（判定每次读盘，meta 写入即生效，无需缓存失效）。
 
 **工作区沙箱**：`readFile` / `writeFile` 的路径解析后必须落在
 `~/.24os/workspace/<skillId>/`（可用 `OS_WORKSPACE_ROOT` 覆盖根目录）内，
@@ -211,6 +277,12 @@ actions:
 - `preview`（iframe / markdown）以同源沙箱 iframe 预览；
 - 动作按钮把 `prompt` 用 `{{key}}` 插值（缺失键默认替换为空串；另有 keep / error 策略），
   经 `POST /api/hermes/chat/stream`（SSE）流式展示 delta / 工具 / 审批 / 完成 / 错误，支持中断；
+- **M5 交互式**：`approval` → 输出区渲染 once/session/always/deny（或 gateway `choices`）
+  按钮 → `POST /api/hermes/chat/decide`；`clarify` → 输入框 + 选项 + 发送；
+  超时/兜底经 `decision.fallback` 事件给出明确状态；
+- **M5 模型下拉 + 昂贵模型确认**：输出工具栏选择模型（agent 模型 + 自由文本），对后续动作的新会话生效；
+  收到 `session/model.confirm_required` → `Modal` 展示 `confirmMessage`，确认带 `force` 重试 /
+  取消输出区提示「已取消昂贵模型确认」；
 - 运行前校验 `required` 字段，缺失则明确提示。
 
 ## 6. skills 根目录发现顺序
@@ -244,9 +316,11 @@ actions:
 
 | 端点 | 说明 |
 | --- | --- |
-| `GET /api/skill-uis` | 列出所有自带 UI 的 skill（`SkillUiInfo[]`，含 `uiHost`）。 |
+| `GET /api/skill-uis` | 列出所有自带 UI 的 skill（`SkillUiInfo[]`，含 `uiHost`；被 meta 禁用者标 `disabled:true`）。 |
 | `GET /api/skill-uis/:id` | 单个 UI 信息，未找到 404。 |
-| `GET /api/skill-uis/:id/panel` | 声明式面板规范 `PanelSpec`；非声明式 / 未找到 → 404 `PANEL_NOT_FOUND`。 |
-| `GET /skill-ui/:id/*` | 静态托管该 skill 的 `ui/` 文件。 |
-| `POST /api/skill-host/invoke` | broker：`{ skillId, method, params }` → `{ ok, result?, error? }`。 |
-| `POST /api/hermes/chat/stream` | gateway 流式对话（SSE）：body `{ profile?, prompt }`，逐条 `data: <ChatStreamEvent>`；审批默认 deny（`OS_GATEWAY_AUTO_APPROVE=1` 时 allow）。 |
+| `GET /api/skill-uis/:id/panel` | 声明式面板规范 `PanelSpec`；非声明式 / 未找到 → 404 `PANEL_NOT_FOUND`；**禁用 → 403 `SKILL_DISABLED`**。 |
+| `GET /skill-ui/:id/*` | 静态托管该 skill 的 `ui/` 文件；**禁用 → 403 `SKILL_DISABLED`**（口径见 §4）。 |
+| `POST /api/skill-host/invoke` | broker：`{ skillId, method, params }` → `{ ok, result?, error? }`；**禁用 → 403 `SKILL_DISABLED`**。 |
+| `POST /api/hermes/chat/stream` | gateway 流式对话（SSE）：body `{ profile?, prompt, chatId?, model?, force? }`，逐条 `data: <ChatStreamEvent>`；SSE 为交互流（approval/clarify 挂起待 decide，超时安全兜底）；`force:true` = 昂贵模型确认后的重试；`OS_GATEWAY_AUTO_APPROVE=1` 时审批与昂贵模型均优先自动放行。 |
+| `POST /api/hermes/chat/decide` | M5 交互式决策：`{ chatId, type: "approval"\|"clarify", choice?, answer? }` → `{ ok, requestId, decision }`；400/404/409 见 §3。（模型昂贵确认重试走 SSE `force`，不经此端点。） |
+| `POST /api/hermes/subagent` | M5：`{ profile?, prompt, confirm:true }`；当前 gateway 契约无 spawn RPC → `501 UNSUPPORTED` + 研究结论（不调模型）。 |

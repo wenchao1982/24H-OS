@@ -16,12 +16,15 @@ import {
   MAX_BACKUPS,
   addMcpServer,
   backupFile,
+  listDisabledSkillNames,
   readAgentConfig,
+  readAgentMeta,
   removeEnvVar,
   removeMcpServer,
   resolveAgentDir,
   restoreBackup,
   setEnvVar,
+  setSkillEnabled,
   updateAgentConfig,
   updateMcpServer,
 } from "./configEdit";
@@ -572,6 +575,79 @@ describe("M5.x 官方命令优先（-p 规则 / via / 回退）", () => {
     );
     expect(result.via).toBe("file");
     expect(fake.calls()).toEqual([]);
+  });
+});
+
+describe("setSkillEnabled —— skill 启停落盘（M2 杂项）", () => {
+  function fixtureWithSkill(): Fixture {
+    const fx = setupFixture({ "config.yaml": CONFIG_WITH_COMMENTS });
+    mkdirSync(path.join(fx.profileDir, "skills", "alpha"), { recursive: true });
+    writeFileSync(path.join(fx.profileDir, "skills", "alpha", "SKILL.md"), "# a\n", "utf8");
+    return fx;
+  }
+
+  it("未 confirm → CONFIRM_REQUIRED，不写盘", async () => {
+    const fx = fixtureWithSkill();
+    await expect(
+      setSkillEnabled(fx.id, { name: "alpha", enabled: false }, fx.deps),
+    ).rejects.toMatchObject({ code: "CONFIRM_REQUIRED" });
+    expect(existsSync(path.join(fx.metaDir, fx.id, "meta.json"))).toBe(false);
+  });
+
+  it("confirm 后写入 meta.skills.<id>.enabled（原子写 + 备份），via:file", async () => {
+    const fx = fixtureWithSkill();
+    const result = await setSkillEnabled(
+      fx.id,
+      { name: "alpha", enabled: false, confirm: true },
+      fx.deps,
+    );
+    expect(result.ok).toBe(true);
+    expect(result.action).toBe("set-skill");
+    expect(result.via).toBe("file");
+
+    const metaPath = path.join(fx.metaDir, fx.id, "meta.json");
+    expect(result.files).toContain(metaPath);
+    const meta = JSON.parse(readFileSync(metaPath, "utf8")) as {
+      skills?: Record<string, { enabled?: boolean }>;
+    };
+    expect(meta.skills?.alpha?.enabled).toBe(false);
+
+    // 已有 meta 字段保留。
+    await updateAgentConfig(fx.id, { description: "keep", confirm: true }, fx.deps);
+    await setSkillEnabled(fx.id, { name: "alpha", enabled: true, confirm: true }, fx.deps);
+    const meta2 = JSON.parse(readFileSync(metaPath, "utf8")) as {
+      description?: string;
+      skills?: Record<string, { enabled?: boolean }>;
+    };
+    expect(meta2.description).toBe("keep");
+    expect(meta2.skills?.alpha?.enabled).toBe(true);
+  });
+
+  it("未知 skill → INVALID_SKILL；空名 → INVALID_SKILL", async () => {
+    const fx = fixtureWithSkill();
+    await expect(
+      setSkillEnabled(fx.id, { name: "nope", enabled: false, confirm: true }, fx.deps),
+    ).rejects.toMatchObject({ code: "INVALID_SKILL" });
+    await expect(
+      setSkillEnabled(fx.id, { name: "  ", enabled: false, confirm: true }, fx.deps),
+    ).rejects.toMatchObject({ code: "INVALID_SKILL" });
+  });
+
+  it("readAgentMeta / listDisabledSkillNames 扫描禁用记录", async () => {
+    const fx = fixtureWithSkill();
+    expect(await readAgentMeta(fx.id, fx.deps)).toEqual({});
+    await setSkillEnabled(fx.id, { name: "alpha", enabled: false, confirm: true }, fx.deps);
+
+    const meta = await readAgentMeta(fx.id, fx.deps);
+    const skills = meta.skills as Record<string, { enabled?: boolean }>;
+    expect(skills.alpha.enabled).toBe(false);
+
+    const disabled = await listDisabledSkillNames(fx.deps);
+    expect(disabled.has("alpha")).toBe(true);
+
+    await setSkillEnabled(fx.id, { name: "alpha", enabled: true, confirm: true }, fx.deps);
+    const disabled2 = await listDisabledSkillNames(fx.deps);
+    expect(disabled2.has("alpha")).toBe(false);
   });
 });
 

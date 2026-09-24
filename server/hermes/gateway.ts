@@ -659,6 +659,36 @@ let shared: SharedGateway | null = null;
 let starting: Promise<SharedGateway> | null = null;
 let lastError: string | null = null;
 
+/** gateway 状态变化监听（M7 Dashboard 广播用）。 */
+export type GatewayStatusPhase = "start" | "stop" | "error";
+export type GatewayStatusListener = (
+  phase: GatewayStatusPhase,
+  detail: { port?: number | null; message?: string },
+) => void;
+
+const gatewayStatusListeners = new Set<GatewayStatusListener>();
+
+/** 订阅 gateway 状态变化；返回取消订阅。 */
+export function onGatewayStatusChange(
+  listener: GatewayStatusListener,
+): () => void {
+  gatewayStatusListeners.add(listener);
+  return () => gatewayStatusListeners.delete(listener);
+}
+
+function emitGatewayStatus(
+  phase: GatewayStatusPhase,
+  detail: { port?: number | null; message?: string } = {},
+): void {
+  for (const listener of [...gatewayStatusListeners]) {
+    try {
+      listener(phase, detail);
+    } catch {
+      // 监听器异常不影响 gateway。
+    }
+  }
+}
+
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -727,10 +757,12 @@ export async function ensureGateway(
       });
       shared = entry;
       lastError = null;
+      emitGatewayStatus("start", { port: handle.port });
       return entry;
     } catch (error) {
       await handle.stop();
       lastError = (error as Error).message;
+      emitGatewayStatus("error", { message: lastError });
       throw error;
     }
   })();
@@ -753,4 +785,5 @@ export async function stopSharedGateway(): Promise<void> {
     // ignore
   }
   await current.handle.stop();
+  emitGatewayStatus("stop", { port: null });
 }

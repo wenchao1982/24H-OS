@@ -7,14 +7,23 @@ import type {
   SkillUiInfo,
 } from "@shared/types";
 import { interpolatePrompt } from "@shared/panel";
-import { API_BASE } from "../api";
+import { API_BASE, decideChat, fetchModelOptions, newChatId } from "../api";
+import Modal from "./Modal";
 
 /**
- * DeclarativePanel —— 声明式 Skill UI 宿主（M4.1）。
+ * DeclarativePanel —— 声明式 Skill UI 宿主（M4.1 → M5 交互式审批/模型）。
  *
  * skill 作者只写 `ui/panel.yaml`（24os-skill-panel/1），这里把它渲染成表单 +
  * 模板画廊 + 预览，并把 `actions[].kind === "prompt"` 的动作通过
  * `POST /api/hermes/chat/stream`（SSE）流式展示。
+ *
+ * M5：输出区支持
+ *   - 审批卡片（once / session / always / deny，或 gateway 透传的 choices）→
+ *     `POST /api/hermes/chat/decide`；
+ *   - 澄清输入框 + 选项 → 同上；
+ *   - 模型下拉（当前 agent 模型 + 自由文本），切换后对**后续** prompt 生效
+ *     （新会话带 `session.create.model`；热切经 `config.set model` 由服务端契约支持）；
+ *   - 超时/兜底：收到 `decision.fallback` 或流结束时给出明确状态。
  *
  * **无任意 JS**：面板内不执行 skill 自带的脚本，能力完全由宿主提供，比 iframe
  * 形态更安全。`select.options_from` / `templates.index` 通过静态托管只读拉取。
@@ -84,6 +93,27 @@ interface OutputLine {
   text: string;
 }
 
+/** 挂起的审批 / 澄清决策卡片。 */
+type PendingDecision =
+  | {
+      kind: "approval";
+      chatId: string;
+      requestId?: string;
+      command?: string;
+      description?: string;
+      choices?: string[];
+    }
+  | {
+      kind: "clarify";
+      chatId: string;
+      requestId?: string;
+      question?: string;
+      choices?: string[];
+    };
+
+/** 标准审批选项（gateway 未透传 choices 时使用）。 */
+const DEFAULT_APPROVAL_CHOICES = ["once", "session", "always", "deny"] as const;
+
 let lineSeq = 0;
 
 export default function DeclarativePanel({
@@ -110,6 +140,15 @@ export default function DeclarativePanel({
   const [streamText, setStreamText] = useState("");
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [model, setModel] = useState("");
+  const [modelOptions, setModelOptions] = useState<string[]>([]);
+  const [pending, setPending] = useState<PendingDecision | null>(null);
+  const [decisionBusy, setDecisionBusy] = useState(false);
+  const [decisionError, setDecisionError] = useState<string | null>(null);
+  const [clarifyAnswer, setClarifyAnswer] = useState("");
+  // 昂贵模型二次确认（M5 收尾）：收到 session/model.confirm_required → Modal。
+  const [modelConfirm, setModelConfirm] = useState<string | null>(null);
+  const modelConfirmResolve = useRef<((proceed: boolean) => void) | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const outputRef = useRef<HTMLDivElement | null>(null);
 
@@ -119,6 +158,21 @@ export default function DeclarativePanel({
 
   const skillId = skill.id;
   const fields = useMemo(() => panel?.fields ?? [], [panel]);
+
+  // 模型下拉候选（M5）：默认取第一个 agent 的 model（无 agent id 上下文时）。
+  useEffect(() => {
+    let cancelled = false;
+    fetchModelOptions()
+      .then((options) => {
+        if (!cancelled) setModelOptions(options);
+      })
+      .catch(() => {
+        if (!cancelled) setModelOptions([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // select.options_from 动态枚举。
   useEffect(() => {
@@ -208,13 +262,67 @@ export default function DeclarativePanel({
           log("tool", `✔ 工具 ${event.name ?? "?"} 完成`);
           break;
         case "approval":
-          log("request", `⚠ 审批：${event.description ?? event.command ?? "(无描述)"}（默认拒绝）`);
+          if (event.autoDecided) {
+            log("request", `⚠ 审批：${event.description ?? event.command ?? "(无描述)"}（已自动处理）`);
+          } else {
+            log("request", `⚠ 审批：${event.description ?? event.command ?? "(无描述)"}（待决策）`);
+            setDecisionError(null);
+            setPending({
+              kind: "approval",
+              chatId: event.chatId ?? "",
+              requestId: event.requestId,
+              command: event.command,
+              description: event.description,
+              choices: event.choices,
+            });
+          }
           break;
         case "clarify":
-          log("request", `？澄清：${event.question ?? "(无问题)"}`);
+          if (event.autoDecided) {
+            log("request", `？澄清：${event.question ?? "(无问题)"}（已自动处理）`);
+          } else {
+            log("request", `？澄清：${event.question ?? "(无问题)"}（待决策）`);
+            setDecisionError(null);
+            setClarifyAnswer("");
+            setPending({
+              kind: "clarify",
+              chatId: event.chatId ?? "",
+              requestId: event.requestId,
+              question: event.question,
+              choices: event.choices,
+            });
+          }
+          break;
+        case "session":
+          if (event.event === "decision.fallback") {
+            const payload = (event.payload ?? {}) as {
+              type?: string;
+              reason?: string;
+              choice?: string;
+            };
+            log(
+              "request",
+              `⚠ 决策已按安全默认兜底（${payload.reason ?? "end"}）：` +
+                `${payload.type === "clarify" ? "空答案" : "deny"}`,
+            );
+            setPending((prev) => (prev && prev.chatId === event.chatId ? null : prev));
+          } else if (event.event === "model.confirm_required") {
+            const payload = (event.payload ?? {}) as { confirmMessage?: string };
+            log(
+              "request",
+              `⚠ 昂贵模型待确认：${payload.confirmMessage || "该模型可能产生较高费用。"}`,
+            );
+          }
           break;
         case "done":
           log("done", `✔ 完成（${event.status ?? "complete"}）`);
+          setPending((prev) => {
+            if (prev) {
+              log("request", "流已结束，未决请求已由服务端按安全默认处理。");
+              return null;
+            }
+            return prev;
+          });
           break;
         case "error":
           log("error", `✖ ${event.message ?? "对话错误"}`);
@@ -224,6 +332,124 @@ export default function DeclarativePanel({
       }
     },
     [log],
+  );
+
+  /** 把一次决策提交给 POST /api/hermes/chat/decide。 */
+  const submitDecision = useCallback(
+    async (payload: { choice?: string; answer?: string }) => {
+      if (!pending || decisionBusy) return;
+      setDecisionBusy(true);
+      setDecisionError(null);
+      try {
+        await decideChat({
+          chatId: pending.chatId,
+          type: pending.kind,
+          ...(payload.choice !== undefined ? { choice: payload.choice } : {}),
+          ...(payload.answer !== undefined ? { answer: payload.answer } : {}),
+        });
+        log(
+          "request",
+          pending.kind === "approval"
+            ? `✔ 已选择 ${payload.choice ?? ""}`
+            : `✔ 已回答：${payload.answer?.trim() ? payload.answer : "(空)"}`,
+        );
+        setPending(null);
+        setClarifyAnswer("");
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        setDecisionError(`决策失败：${message}`);
+        log("error", `✖ 决策失败：${message}`);
+      } finally {
+        setDecisionBusy(false);
+      }
+    },
+    [pending, decisionBusy, log],
+  );
+
+  /** 昂贵模型确认：弹 Modal 并挂起等待用户 确认(true)/取消(false)。 */
+  const askModelConfirm = useCallback((message: string): Promise<boolean> => {
+    setModelConfirm(message);
+    return new Promise<boolean>((resolve) => {
+      modelConfirmResolve.current = resolve;
+    });
+  }, []);
+
+  /** 结算昂贵模型确认（Modal 按钮 / 关闭）。 */
+  const settleModelConfirm = useCallback((proceed: boolean) => {
+    setModelConfirm(null);
+    const resolve = modelConfirmResolve.current;
+    modelConfirmResolve.current = null;
+    resolve?.(proceed);
+  }, []);
+
+  /**
+   * 跑一轮 SSE（创建/带模型切换）；返回非空字符串表示收到
+   * `model.confirm_required`（需 Modal 决策），null 表示流正常结束。
+   */
+  const streamOnce = useCallback(
+    async (prompt: string, force: boolean): Promise<string | null> => {
+      const chatId = newChatId();
+      const controller = new AbortController();
+      abortRef.current = controller;
+      let confirmMessage: string | null = null;
+      try {
+        const response = await fetch(`${API_BASE}/api/hermes/chat/stream`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            prompt,
+            chatId,
+            ...(model.trim() ? { model: model.trim() } : {}),
+            ...(force ? { force: true } : {}),
+          }),
+          signal: controller.signal,
+        });
+        if (!response.ok || !response.body) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          let index = buffer.indexOf("\n\n");
+          while (index >= 0) {
+            const chunk = buffer.slice(0, index).trim();
+            buffer = buffer.slice(index + 2);
+            if (chunk.startsWith("data:")) {
+              try {
+                const event = JSON.parse(
+                  chunk.slice("data:".length).trim(),
+                ) as ChatStreamEvent;
+                applyEvent(event);
+                if (
+                  event.type === "session" &&
+                  event.event === "model.confirm_required"
+                ) {
+                  const payload = (event.payload ?? {}) as { confirmMessage?: string };
+                  confirmMessage =
+                    payload.confirmMessage || "该模型可能产生较高费用，确认后方可使用。";
+                }
+              } catch {
+                // 忽略无法解析的帧。
+              }
+            }
+            index = buffer.indexOf("\n\n");
+          }
+        }
+      } catch (err) {
+        if (!controller.signal.aborted) {
+          setError(`对话失败：${(err as Error).message}`);
+        }
+      } finally {
+        if (abortRef.current === controller) abortRef.current = null;
+      }
+      return confirmMessage;
+    },
+    [applyEvent, model],
   );
 
   const runAction = async (action: PanelAction) => {
@@ -240,46 +466,31 @@ export default function DeclarativePanel({
 
     setLines([]);
     setStreamText("");
+    setPending(null);
+    setDecisionError(null);
     log("text", `$ ${prompt}`);
     setRunning(true);
 
-    const controller = new AbortController();
-    abortRef.current = controller;
     try {
-      const response = await fetch(`${API_BASE}/api/hermes/chat/stream`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt }),
-        signal: controller.signal,
-      });
-      if (!response.ok || !response.body) {
-        throw new Error(`HTTP ${response.status}`);
-      }
-
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
+      // 昂贵模型确认：不静默放行——confirm_required → Modal → 确认 force 重试 / 取消提示。
+      let force = false;
       for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
-        let index = buffer.indexOf("\n\n");
-        while (index >= 0) {
-          const chunk = buffer.slice(0, index).trim();
-          buffer = buffer.slice(index + 2);
-          if (chunk.startsWith("data:")) {
-            try {
-              applyEvent(JSON.parse(chunk.slice("data:".length).trim()) as ChatStreamEvent);
-            } catch {
-              // 忽略无法解析的帧。
-            }
-          }
-          index = buffer.indexOf("\n\n");
+        const confirmMessage = await streamOnce(prompt, force);
+        if (!confirmMessage) break;
+        const proceed = await askModelConfirm(confirmMessage);
+        if (!proceed) {
+          log("request", "⏹ 已取消昂贵模型确认，模型未切换。");
+          break;
         }
-      }
-    } catch (err) {
-      if (!controller.signal.aborted) {
-        setError(`对话失败：${(err as Error).message}`);
+        if (force) {
+          log("error", "✖ gateway 仍要求确认昂贵模型，已中止（不放行）。");
+          break;
+        }
+        setLines([]);
+        setStreamText("");
+        setPending(null);
+        log("text", `$ ${prompt}（已确认昂贵模型，force 重试）`);
+        force = true;
       }
     } finally {
       setRunning(false);
@@ -412,6 +623,36 @@ export default function DeclarativePanel({
         </div>
       </div>
 
+      {modelConfirm !== null && (
+        <Modal
+          title="昂贵模型确认"
+          onClose={() => settleModelConfirm(false)}
+          footer={
+            <>
+              <button
+                type="button"
+                className="btn-edit"
+                onClick={() => settleModelConfirm(false)}
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                className="btn-primary"
+                onClick={() => settleModelConfirm(true)}
+              >
+                确认切换
+              </button>
+            </>
+          }
+        >
+          <p className="model-confirm-message">{modelConfirm}</p>
+          <p className="model-confirm-hint">
+            确认后将以该模型发起对话（force 放行）；取消则不切换，保持当前模型。
+          </p>
+        </Modal>
+      )}
+
       <div className="decl-body">
         <section className="decl-form">
           {panel.description && <p className="decl-desc">{panel.description}</p>}
@@ -502,8 +743,26 @@ export default function DeclarativePanel({
             />
           )}
 
+          <div className="decl-output-toolbar">
+            <label className="model-picker" title="切换后对后续 prompt 生效（新会话带该模型）">
+              <span>模型</span>
+              <input
+                list="decl-model-options"
+                value={model}
+                placeholder="默认"
+                onChange={(event) => setModel(event.target.value)}
+                disabled={running}
+              />
+              <datalist id="decl-model-options">
+                {modelOptions.map((option) => (
+                  <option key={option} value={option} />
+                ))}
+              </datalist>
+            </label>
+          </div>
+
           <div className="decl-output" ref={outputRef}>
-            {lines.length === 0 && !streamText && (
+            {lines.length === 0 && !streamText && !pending && (
               <div className="skill-debug-empty">点击动作按钮后在此查看流式输出…</div>
             )}
             {lines.map((line) => (
@@ -512,6 +771,82 @@ export default function DeclarativePanel({
               </div>
             ))}
             {streamText && <pre className="decl-stream">{streamText}</pre>}
+
+            {pending?.kind === "approval" && (
+              <div className="chat-decision">
+                <div className="chat-decision-title">
+                  ⚠ 审批：{pending.description ?? pending.command ?? "(无描述)"}
+                </div>
+                <div className="chat-decision-actions">
+                  {(pending.choices && pending.choices.length > 0
+                    ? pending.choices
+                    : [...DEFAULT_APPROVAL_CHOICES]
+                  ).map((choice) => (
+                    <button
+                      key={choice}
+                      type="button"
+                      className={
+                        choice === "deny" ? "chat-decision-btn danger" : "chat-decision-btn"
+                      }
+                      disabled={decisionBusy}
+                      onClick={() => void submitDecision({ choice })}
+                    >
+                      {choice}
+                    </button>
+                  ))}
+                </div>
+                {decisionError && (
+                  <div className="chat-decision-error">{decisionError}</div>
+                )}
+              </div>
+            )}
+
+            {pending?.kind === "clarify" && (
+              <div className="chat-decision">
+                <div className="chat-decision-title">？{pending.question ?? "(无问题)"}</div>
+                {pending.choices && pending.choices.length > 0 && (
+                  <div className="chat-decision-choices">
+                    {pending.choices.map((choice) => (
+                      <button
+                        key={choice}
+                        type="button"
+                        className="chat-decision-chip"
+                        disabled={decisionBusy}
+                        onClick={() => setClarifyAnswer(choice)}
+                      >
+                        {choice}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                <div className="chat-decision-row">
+                  <input
+                    className="input"
+                    value={clarifyAnswer}
+                    placeholder="输入答案（留空 = 跳过）"
+                    disabled={decisionBusy}
+                    onChange={(event) => setClarifyAnswer(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        event.preventDefault();
+                        void submitDecision({ answer: clarifyAnswer });
+                      }
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className="btn-primary"
+                    disabled={decisionBusy}
+                    onClick={() => void submitDecision({ answer: clarifyAnswer })}
+                  >
+                    {decisionBusy ? "发送中…" : "发送"}
+                  </button>
+                </div>
+                {decisionError && (
+                  <div className="chat-decision-error">{decisionError}</div>
+                )}
+              </div>
+            )}
           </div>
         </section>
       </div>

@@ -1,0 +1,23 @@
+protocol: 24os-appmanifest/1
+id: outline-declarative
+name: 大纲写作（声明式）
+version: 1.0.0
+description: 声明式面板驱动的大纲生成与润色 App
+source:
+  type: builtin
+  path: examples/skills/outline
+profile:
+  model:
+    default: kimi-k2.5
+  skills:
+    - outline
+ui:
+  skillId: outline
+  host: declarative
+hooks:
+  oninstall: [ui.open]
+  onupdate: [notify]
+  ondelete: []
+plugins: []
+sign:
+  sha256: ""

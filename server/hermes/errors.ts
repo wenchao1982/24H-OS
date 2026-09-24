@@ -21,10 +21,21 @@ export type LifecycleErrorCode =
   | "MCP_SERVER_NOT_FOUND"
   | "BACKUP_NOT_FOUND"
   | "AGENT_NOT_FOUND"
+  | "INVALID_SKILL"
+  // Skill UI 启停（M2 杂项收尾）：被任一 agent meta 标 enabled:false
+  | "SKILL_DISABLED"
   // M5 · TUI gateway
   | "GATEWAY_UNAVAILABLE"
   | "GATEWAY_TIMEOUT"
-  | "GATEWAY_RPC_ERROR";
+  | "GATEWAY_RPC_ERROR"
+  // M5 · 交互式审批 / subagent
+  | "CHAT_NOT_FOUND"
+  | "DECISION_RESOLVED"
+  | "UNSUPPORTED"
+  // M6 · AppManifest
+  | "INVALID_MANIFEST"
+  | "SIGN_MISMATCH"
+  | "APP_NOT_FOUND";
 
 /** 生命周期层的统一错误类型，携带稳定的错误码。 */
 export class LifecycleError extends Error {
@@ -55,15 +66,26 @@ export function statusForCode(code: LifecycleErrorCode): number {
     case "INVALID_KEY":
     case "INVALID_VALUE":
     case "INVALID_MCP_SERVER":
+    case "INVALID_SKILL":
     case "CONFIG_PARSE_FAILED":
     case "PATH_TRAVERSAL":
+    case "INVALID_MANIFEST":
+    case "SIGN_MISMATCH":
       return 400;
     case "MCP_SERVER_EXISTS":
       return 409;
     case "MCP_SERVER_NOT_FOUND":
     case "BACKUP_NOT_FOUND":
     case "AGENT_NOT_FOUND":
+    case "APP_NOT_FOUND":
+    case "CHAT_NOT_FOUND":
       return 404;
+    case "DECISION_RESOLVED":
+      return 409;
+    case "SKILL_DISABLED":
+      return 403;
+    case "UNSUPPORTED":
+      return 501;
     case "HERMES_CLI_UNAVAILABLE":
     case "GATEWAY_UNAVAILABLE":
       return 503;

@@ -17,6 +17,11 @@ import type { HermesCliSource, HermesMode, HermesStatus } from "@shared/types";
  * M5.x：解析 CLI 包装脚本里的 `HERMES_HOME=`（resolveCliHome），在无显式 env 覆盖时
  * 以其声明目录作为 activeHome，确保 configEdit / profiles 与 CLI 写同一个 home。
  *
+ * 显式覆盖无效即停（M2 杂项对齐）：
+ *   - `OS_HERMES_CLI` 已设置但路径不存在 → CLI 不可用（cliSource:"env" / cliPath:null），
+ *     **不**再回退 PATH / ~/.local/bin / hermes-bin 探测（与 cli.ts#resolveHermesCli 一致）；
+ *   - `OS_HERMES_HOME` / `HERMES_HOME` 已设置 → 直接采用该目录（即使不存在），不静默换家。
+ *
  * 可测试性：所有函数接受可选的 DetectOptions（homeDir / env 注入），
  * 测试使用临时目录，绝不触碰真实 ~/.hermes。
  */
@@ -110,9 +115,15 @@ export function listHermesHomes(options: DetectOptions = {}): string[] {
   return homes;
 }
 
-/** 生效的 home：优先 env 指定的 home（存在时），否则第一个有效候选。 */
+/**
+ * 生效的 home。
+ * 显式 env（OS_HERMES_HOME / HERMES_HOME）优先且**无效即停**：即使目录不存在也直接返回，
+ * 绝不静默切换到其它候选（避免「CLI 写 A、文件写 B」）。
+ * 无显式 env 时，configured（默认 ~/.hermes）存在则用之，否则第一个有效候选。
+ */
 export function resolveActiveHome(options: DetectOptions = {}): string {
   const configured = resolveConfiguredHome(options);
+  if (hasExplicitHome(options)) return configured;
   if (existsSync(configured)) return configured;
   return listHermesHomes(options)[0] ?? configured;
 }
@@ -138,15 +149,23 @@ function which(bin: string, env?: NodeJS.ProcessEnv): string | null {
 
 /**
  * 解析 hermes CLI 路径（同步版，供 configEdit / profiles 复用）。
- * 优先级：OS_HERMES_CLI（显式路径，存在才算）→ PATH(which) → ~/.local/bin/hermes → <home>/bin/hermes。
+ * 优先级：OS_HERMES_CLI（显式路径）→ PATH(which) → ~/.local/bin/hermes → <home>/bin/hermes。
+ *
+ * 与 `cli.ts#resolveHermesCli` 对齐：**OS_HERMES_CLI 已设置但指向不存在的路径时，
+ * CLI 视为不可用（cliSource:"env"、cliPath:null），不再回退 PATH / ~/.local/bin 探测**——
+ * 显式覆盖无效即停，便于测试隔离，也避免「声明的 CLI 不可用却悄悄用另一个」。
  */
 export function resolveCliPathSync(options: DetectOptions = {}): ResolvedCli {
   const env = options.env ?? process.env;
   const homeDir = options.homeDir ?? os.homedir();
 
   const fromEnv = env.OS_HERMES_CLI?.trim();
-  if (fromEnv && existsSync(fromEnv)) {
-    return { cliPath: path.resolve(fromEnv), cliSource: "env" };
+  if (fromEnv) {
+    if (existsSync(fromEnv)) {
+      return { cliPath: path.resolve(fromEnv), cliSource: "env" };
+    }
+    // 显式 env 无效 → 不可用，不回退。
+    return { cliPath: null, cliSource: "env" };
   }
 
   const onPath = which("hermes", env);

@@ -34,8 +34,11 @@ beforeEach(async () => {
   savedEnv.OS_HERMES_CLI = process.env.OS_HERMES_CLI;
   savedEnv.OS_BACKUP_DIR = process.env.OS_BACKUP_DIR;
   savedEnv.OS_MARKET_FILE = process.env.OS_MARKET_FILE;
+  savedEnv.OS_MARKET_APPS_DIR = process.env.OS_MARKET_APPS_DIR;
   process.env.OS_HERMES_CLI = path.join(newTempDir("24os-nocli-"), "missing-hermes");
   process.env.OS_BACKUP_DIR = newTempDir("24os-route-backups-");
+  // 默认隔离 builtin AppManifest 目录（避免读到仓库 market/apps 影响断言）。
+  process.env.OS_MARKET_APPS_DIR = newTempDir("24os-market-apps-");
 
   const marketFile = path.join(newTempDir("24os-market-"), "index.json");
   writeFileSync(

@@ -8,6 +8,7 @@ import { invokeSkill } from "./broker";
 /** 原始环境变量，测试后恢复。 */
 const ORIGINAL_ROOTS = process.env.OS_SKILL_ROOTS;
 const ORIGINAL_WORKSPACE = process.env.OS_WORKSPACE_ROOT;
+const ORIGINAL_META_DIR = process.env.OS_META_DIR;
 
 const tempDirs: string[] = [];
 
@@ -15,6 +16,13 @@ function makeTemp(prefix: string): string {
   const dir = mkdtempSync(path.join(os.tmpdir(), prefix));
   tempDirs.push(dir);
   return dir;
+}
+
+/** 写一个 agent meta（skill 启停段），键 = skill id / 目录名。 */
+function writeAgentMeta(metaRoot: string, agentId: string, skills: Record<string, unknown>): void {
+  const dir = path.join(metaRoot, agentId);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(path.join(dir, "meta.json"), JSON.stringify({ skills }, null, 2), "utf8");
 }
 
 /** 在临时 skills 根下写一个带 manifest 的 skill。 */
@@ -38,15 +46,18 @@ function writeSkill(root: string, id: string, manifest: Partial<SkillUiManifest>
   );
 }
 
-/** 每个测试用独立的 skills 根 + 工作区根。 */
+/** 每个测试用独立的 skills 根 + 工作区根 + meta 根（禁用判定读盘隔离）。 */
 let skillsRoot: string;
 let workspaceRoot: string;
+let metaRoot: string;
 
 beforeEach(() => {
   skillsRoot = makeTemp("24os-broker-skills-");
   workspaceRoot = makeTemp("24os-broker-ws-");
+  metaRoot = makeTemp("24os-broker-meta-");
   process.env.OS_SKILL_ROOTS = skillsRoot;
   process.env.OS_WORKSPACE_ROOT = workspaceRoot;
+  process.env.OS_META_DIR = metaRoot;
 });
 
 afterEach(() => {
@@ -54,6 +65,8 @@ afterEach(() => {
   else process.env.OS_SKILL_ROOTS = ORIGINAL_ROOTS;
   if (ORIGINAL_WORKSPACE === undefined) delete process.env.OS_WORKSPACE_ROOT;
   else process.env.OS_WORKSPACE_ROOT = ORIGINAL_WORKSPACE;
+  if (ORIGINAL_META_DIR === undefined) delete process.env.OS_META_DIR;
+  else process.env.OS_META_DIR = ORIGINAL_META_DIR;
   while (tempDirs.length > 0) {
     const dir = tempDirs.pop();
     if (dir) rmSync(dir, { recursive: true, force: true });
@@ -105,6 +118,39 @@ describe("invokeSkill —— capability 门禁", () => {
     });
     expect(outcome.status).toBe(400);
     expect(outcome.body.error?.code).toBe("TOOL_NOT_ALLOWED");
+  });
+});
+
+describe("invokeSkill —— SKILL_DISABLED 门禁（与 skill-uis.disabled 同口径）", () => {
+  beforeEach(() => {
+    writeSkill(skillsRoot, "t-off", { capabilities: ["emitEvent"], permissions: [] });
+    writeSkill(skillsRoot, "t-on", { capabilities: ["emitEvent"], permissions: [] });
+    writeAgentMeta(metaRoot, "agent-a", {
+      "t-off": { enabled: false },
+      "t-on": { enabled: true },
+    });
+    // 另一 agent 未管理 t-off：聚合仍以 A 的禁用为准。
+    writeAgentMeta(metaRoot, "agent-b", { "t-other": { enabled: true } });
+  });
+
+  it("禁用 skill → 403 SKILL_DISABLED；重新启用后恢复 200", async () => {
+    const disabled = await invokeSkill({ skillId: "t-off", method: "emitEvent" });
+    expect(disabled.status).toBe(403);
+    expect(disabled.body.ok).toBe(false);
+    expect(disabled.body.error?.code).toBe("SKILL_DISABLED");
+
+    writeAgentMeta(metaRoot, "agent-a", { "t-off": { enabled: true } });
+    const restored = await invokeSkill({ skillId: "t-off", method: "emitEvent" });
+    expect(restored.status).toBe(200);
+    expect(restored.body.ok).toBe(true);
+  });
+
+  it("未被禁用的 skill 不受影响（A 禁他、B 未管 → 只有 t-off 拦）", async () => {
+    const on = await invokeSkill({ skillId: "t-on", method: "emitEvent" });
+    expect(on.status).toBe(200);
+    // 不存在的 skill 仍是 404（先判存在）。
+    const missing = await invokeSkill({ skillId: "t-ghost", method: "emitEvent" });
+    expect(missing.status).toBe(404);
   });
 });
 
@@ -248,7 +294,7 @@ describe("invokeSkill —— 工具 / 模型桩", () => {
           options.onEvent?.({ type: "delta", text: "你" });
           options.onEvent?.({ type: "delta", text: "好" });
           options.onEvent?.({ type: "done", text: "你好", status: "complete" });
-          return { sessionId: "s1", status: "done" };
+          return { sessionId: "s1", status: "done", chatId: "c-test" };
         },
       },
     );

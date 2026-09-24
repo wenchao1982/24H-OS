@@ -4,6 +4,7 @@ import { fetchAgents, fetchMarket, fetchSkillUis } from "./api";
 import DeclarativePanel from "./components/DeclarativePanel";
 import InstallAgentDialog from "./components/InstallAgentDialog";
 import SkillHost from "./components/SkillHost";
+import StatusDrawer from "./components/StatusDrawer";
 import AgentDetail from "./pages/AgentDetail";
 
 /**
@@ -96,6 +97,9 @@ export default function App() {
   return (
     <div className="app">
       <StatusBar status={status} error={error} />
+      <div className="status-drawer-anchor">
+        <StatusDrawer />
+      </div>
 
       <div className="layout">
         <aside className="sidebar">
@@ -159,19 +163,22 @@ export default function App() {
                   <div className="market-head">
                     <span className="agent-item-name">{ui.title}</span>
                     <span className="market-id">{ui.id}</span>
+                    {ui.disabled && <span className="struct-off">已禁用</span>}
                   </div>
                   <p className="market-desc">
                     {ui.uiHost === "declarative"
                       ? `声明式面板 · ${ui.panel?.fields.length ?? 0} 个字段`
                       : (ui.manifest?.capabilities.join(" · ") ?? "")}
                   </p>
-                  <button
-                    type="button"
-                    className="btn-skill-ui"
-                    onClick={() => setActiveUi(ui)}
-                  >
-                    打开 Skill UI
-                  </button>
+                  {!ui.disabled && (
+                    <button
+                      type="button"
+                      className="btn-skill-ui"
+                      onClick={() => setActiveUi(ui)}
+                    >
+                      打开 Skill UI
+                    </button>
+                  )}
                 </li>
               ))}
               {!loading && skillUis.length === 0 && (

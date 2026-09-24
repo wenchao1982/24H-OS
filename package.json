@@ -3,18 +3,57 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "main": "electron/main.cjs",
   "description": "24H-OS — 以 Hermes 为核心的多 agent 桌面工作台（M1 原型，web-first）",
   "scripts": {
     "dev": "concurrently -n server,web -c blue,magenta \"npm:dev:server\" \"npm:dev:web\"",
     "dev:server": "tsx watch server/index.ts",
     "dev:web": "vite",
+    "dev:desktop": "npm run build:web && concurrently -n server,electron -c blue,green \"npm:dev:server\" \"electron .\"",
+    "electron": "electron .",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.node.json --noEmit",
     "test": "vitest run",
     "check": "npm run typecheck && npm test",
     "build:web": "vite build",
-    "build": "npm run build:web && npm run typecheck",
+    "build:server": "node scripts/build-server.mjs",
+    "build": "npm run build:web && npm run build:server && npm run typecheck",
+    "dist": "npm run build && electron-builder --linux",
     "start": "tsx server/index.ts",
     "preview": "vite preview"
+  },
+  "author": {
+    "name": "24H-OS",
+    "email": "maintainers@24h-os.local"
+  },
+  "build": {
+    "appId": "im.24h.os",
+    "productName": "24H-OS",
+    "asar": true,
+    "asarUnpack": [
+      "dist/server.cjs",
+      "dist/web/**",
+      "market/**",
+      "examples/skills/**"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "electron/**",
+      "dist/server.cjs",
+      "dist/web/**",
+      "market/**",
+      "examples/skills/**",
+      "package.json"
+    ],
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Utility",
+      "maintainer": "24H-OS <maintainers@24h-os.local>"
+    }
   },
   "engines": {
     "node": ">=20"
@@ -35,6 +74,9 @@
     "@types/ws": "^8.18.1",
     "@vitejs/plugin-react": "^4.3.4",
     "concurrently": "^9.1.2",
+    "electron": "^44.4.5",
+    "electron-builder": "^26.15.3",
+    "esbuild": "^0.28.2",
     "tsx": "^4.19.2",
     "typescript": "^5.7.3",
     "vite": "^6.0.7",

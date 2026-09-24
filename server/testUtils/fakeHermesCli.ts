@@ -33,6 +33,42 @@ if (args[0] === "profile" && args[1] === "export") {
   process.stdout.write("exported " + (args[2] || "") + "\\n");
   process.exit(0);
 }
+// profile install / import：在 HERMES_HOME 下创建 profile 目录（模拟落盘）。
+if (args[0] === "profile" && (args[1] === "install" || args[1] === "import")) {
+  const home = process.env.HERMES_HOME || process.env.OS_HERMES_HOME;
+  let name = "default";
+  const ni = args.indexOf("--name");
+  if (ni >= 0 && args[ni + 1]) name = args[ni + 1];
+  else if (args[1] === "install" && args[2] && !args[2].startsWith("-")) {
+    const base = path.basename(args[2].replace(/\\/+$/, ""));
+    if (base && base !== "." && base !== "..") name = base;
+  }
+  if (home) {
+    const dir = name === "default" ? home : path.join(home, "profiles", name);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, "config.yaml"),
+      fs.existsSync(path.join(dir, "config.yaml"))
+        ? fs.readFileSync(path.join(dir, "config.yaml"), "utf8")
+        : "model: fake\\n",
+    );
+  }
+  process.stdout.write("ok " + args.join(" ") + "\\n");
+  process.exit(0);
+}
+// profile delete：移除目录。
+if (args[0] === "profile" && args[1] === "delete") {
+  const home = process.env.HERMES_HOME || process.env.OS_HERMES_HOME;
+  const name = args[2] || "default";
+  if (home) {
+    const dir = name === "default" ? home : path.join(home, "profiles", name);
+    if (dir.startsWith(home)) {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }
+  process.stdout.write("deleted " + name + "\\n");
+  process.exit(0);
+}
 process.stdout.write("ok " + args.join(" ") + "\\n");
 process.exit(0);
 `;

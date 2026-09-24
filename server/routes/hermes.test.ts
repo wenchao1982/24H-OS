@@ -3,7 +3,8 @@ import os from "node:os";
 import path from "node:path";
 import Fastify, { type FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { StreamPromptOptions } from "../hermes/chat";
+import type { ChatDecisionInput, StreamPromptOptions } from "../hermes/chat";
+import { lifecycleError } from "../hermes/errors";
 import { hermesRoutes } from "./hermes";
 
 /**
@@ -58,7 +59,8 @@ describe("GET /api/hermes/status", () => {
     const body = res.json();
     expect(body.mode).toBe("mock");
     expect(body.cliPath).toBeNull();
-    expect(body.cliSource).toBeNull();
+    // OS_HERMES_CLI 显式指向不存在的路径 → 不可用但来源标为 env（无效即停，不回退）。
+    expect(body.cliSource).toBe("env");
     expect(Array.isArray(body.hermesHomes)).toBe(true);
     expect(typeof body.activeHome).toBe("string");
   });
@@ -148,7 +150,6 @@ describe("POST /api/hermes/chat/stream —— SSE", () => {
     const sseApp = Fastify();
     await sseApp.register(hermesRoutes, {
       streamPrompt: async () => {
-        const { lifecycleError } = await import("../hermes/errors");
         throw lifecycleError("GATEWAY_UNAVAILABLE", "no cli");
       },
     });
@@ -164,5 +165,169 @@ describe("POST /api/hermes/chat/stream —— SSE", () => {
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({ type: "error", reason: "GATEWAY_UNAVAILABLE" });
     await sseApp.close();
+  });
+
+  it("透传 chatId / model，并以 interactive:true 运行（M5）", async () => {
+    const captured: Partial<StreamPromptOptions> = {};
+    const sseApp = Fastify();
+    await sseApp.register(hermesRoutes, {
+      streamPrompt: async (options: StreamPromptOptions) => {
+        Object.assign(captured, options);
+        options.onEvent?.({ type: "done", sessionId: "s1", text: "ok", status: "complete" });
+        return { sessionId: "s1", status: "done", chatId: options.chatId ?? "gen" };
+      },
+    });
+
+    const res = await sseApp.inject({
+      method: "POST",
+      url: "/api/hermes/chat/stream",
+      payload: { prompt: "hi", chatId: "chat-route-1", model: "m-x", profile: "writer" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(captured.chatId).toBe("chat-route-1");
+    expect(captured.model).toBe("m-x");
+    expect(captured.profile).toBe("writer");
+    expect(captured.interactive).toBe(true);
+    await sseApp.close();
+  });
+
+  it("SSE body.force=true 透传给 streamPrompt；缺省不带 force（M5 昂贵模型确认）", async () => {
+    const captured: StreamPromptOptions[] = [];
+    const sseApp = Fastify();
+    await sseApp.register(hermesRoutes, {
+      streamPrompt: async (options: StreamPromptOptions) => {
+        captured.push(options);
+        options.onEvent?.({ type: "done", sessionId: "s1", text: "ok", status: "complete" });
+        return { sessionId: "s1", status: "done", chatId: options.chatId ?? "gen" };
+      },
+    });
+
+    await sseApp.inject({
+      method: "POST",
+      url: "/api/hermes/chat/stream",
+      payload: { prompt: "a", model: "big-model", force: true },
+    });
+    await sseApp.inject({
+      method: "POST",
+      url: "/api/hermes/chat/stream",
+      payload: { prompt: "b", model: "big-model" },
+    });
+
+    expect(captured[0]?.force).toBe(true);
+    expect(captured[1]?.force).toBeUndefined();
+    await sseApp.close();
+  });
+});
+
+describe("POST /api/hermes/chat/decide —— 交互式决策", () => {
+  it("缺 chatId / type → 400 INVALID_VALUE", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/hermes/chat/decide",
+      payload: { type: "approval" },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toBe("INVALID_VALUE");
+
+    const res2 = await app.inject({
+      method: "POST",
+      url: "/api/hermes/chat/decide",
+      payload: { chatId: "c1", type: "nope" },
+    });
+    expect(res2.statusCode).toBe(400);
+    expect(res2.json().error).toBe("INVALID_VALUE");
+  });
+
+  it("未知 chatId → 404 CHAT_NOT_FOUND（真实 decideApproval，空注册表）", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/hermes/chat/decide",
+      payload: { chatId: "missing-chat", type: "approval", choice: "once" },
+    });
+    expect(res.statusCode).toBe(404);
+    expect(res.json().error).toBe("CHAT_NOT_FOUND");
+  });
+
+  it("已决（无 pending）→ 409 DECISION_RESOLVED（注入 decideApproval）", async () => {
+    const decideApp = Fastify();
+    await decideApp.register(hermesRoutes, {
+      decideApproval: () => {
+        throw lifecycleError("DECISION_RESOLVED", "没有待决的 approval 请求。");
+      },
+    });
+    const res = await decideApp.inject({
+      method: "POST",
+      url: "/api/hermes/chat/decide",
+      payload: { chatId: "c1", type: "approval", choice: "deny" },
+    });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error).toBe("DECISION_RESOLVED");
+    await decideApp.close();
+  });
+
+  it("成功决策 → 200 { ok, requestId, decision }", async () => {
+    const decideApp = Fastify();
+    await decideApp.register(hermesRoutes, {
+      decideApproval: (chatId: string, decision: ChatDecisionInput) => ({
+        ok: true as const,
+        chatId,
+        requestId: "srq-1",
+        type: decision.type,
+        decision:
+          decision.type === "approval"
+            ? { choice: decision.choice ?? "deny" }
+            : { answer: decision.answer ?? "" },
+      }),
+    });
+    const res = await decideApp.inject({
+      method: "POST",
+      url: "/api/hermes/chat/decide",
+      payload: { chatId: "c1", type: "approval", choice: "once" },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({
+      ok: true,
+      chatId: "c1",
+      requestId: "srq-1",
+      decision: { choice: "once" },
+    });
+    await decideApp.close();
+  });
+});
+
+describe("POST /api/hermes/subagent —— M5 研究结论", () => {
+  it("缺 confirm → 400 CONFIRM_REQUIRED", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/hermes/subagent",
+      payload: { prompt: "干活" },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toBe("CONFIRM_REQUIRED");
+  });
+
+  it("confirm + 空 prompt → 400 INVALID_VALUE", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/hermes/subagent",
+      payload: { prompt: "   ", confirm: true },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toBe("INVALID_VALUE");
+  });
+
+  it("confirm + prompt → 501 UNSUPPORTED + 契约研究结论（不调模型）", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/hermes/subagent",
+      payload: { prompt: "干活", confirm: true, profile: "writer" },
+    });
+    expect(res.statusCode).toBe(501);
+    const body = res.json();
+    expect(body).toMatchObject({ ok: false, supported: false, code: "UNSUPPORTED" });
+    expect(body.contract.spawnSupported).toBe(false);
+    expect(body.contract.observeSupported).toBe(true);
+    expect(Array.isArray(body.contract.methods)).toBe(true);
   });
 });

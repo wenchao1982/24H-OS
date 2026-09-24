@@ -3,6 +3,8 @@ import type {
   Agent,
   AgentConfig,
   AgentsResponse,
+  ChatDecideRequest,
+  ChatDecideResult,
   ConfigEditResult,
   DeleteAgentRequest,
   HermesStatus,
@@ -75,6 +77,43 @@ export function fetchAgents(): Promise<AgentsResponse> {
 /** GET /api/agents/:id */
 export function fetchAgent(id: string): Promise<Agent> {
   return request<Agent>(`/api/agents/${encodeURIComponent(id)}`);
+}
+
+/**
+ * 模型下拉候选（M5 模型热切换）：
+ * 指定 agentId 时取 `GET /api/agents/:id` 的 model；否则取 `GET /api/agents` 全部去重。
+ */
+export async function fetchModelOptions(agentId?: string): Promise<string[]> {
+  if (agentId) {
+    try {
+      const agent = await fetchAgent(agentId);
+      return agent.model ? [agent.model] : [];
+    } catch {
+      // agent 不存在 → 回退全量列表。
+    }
+  }
+  const data = await fetchAgents();
+  const seen = new Set<string>();
+  for (const agent of data.agents) {
+    if (agent.model) seen.add(agent.model);
+  }
+  return [...seen];
+}
+
+/** POST /api/hermes/chat/decide —— 回应挂起的 approval / clarify（M5 交互式授权）。 */
+export function decideChat(body: ChatDecideRequest): Promise<ChatDecideResult> {
+  return request<ChatDecideResult>("/api/hermes/chat/decide", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+/** 生成客户端 chatId（SSE body 可选；用于 decide 定位）。 */
+export function newChatId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `chat-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
 /** GET /api/hermes/status */
@@ -221,4 +260,15 @@ export function restoreAgentConfigBackup(
     `/api/agents/${encodeURIComponent(id)}/config/restore`,
     { method: "POST", body: JSON.stringify(body) },
   );
+}
+
+/** POST /api/agents/:id/skills —— skill 启停落盘（meta.json）。 */
+export function setSkillEnabled(
+  id: string,
+  body: { name: string; enabled: boolean; confirm?: boolean },
+): Promise<ConfigEditResult> {
+  return request<ConfigEditResult>(`/api/agents/${encodeURIComponent(id)}/skills`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
 }

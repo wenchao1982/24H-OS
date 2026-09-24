@@ -7,8 +7,8 @@ import { readProfiles } from "./profiles";
  * Hermes 内核桥接层的聚合入口。
  * 一次探测 + 读取，产出 { agents, status } 快照；结果做进程内缓存（带 TTL）。
  *
- * TODO(M2+): 这里将来对接 hermes CLI 的 profile install / update / delete，
- *            并在 profile 变更后调用 refreshSnapshot()。
+ * 写操作（lifecycle / configEdit / appmanifest apply）成功后必须调用
+ * invalidateAgentsCache()，让下一次 getSnapshot() 立即反映磁盘新数据（不等 TTL）。
  */
 
 /** 缓存存活时间（毫秒），默认 2000ms，可用 OS_CACHE_TTL_MS 覆盖。<=0 表示不缓存。 */
@@ -50,7 +50,16 @@ export function getSnapshot(): Promise<AgentsResponse> {
   return value;
 }
 
-/** 清空缓存并重新探测（未来 profile 变更后调用）。 */
+/**
+ * 失效 agents 快照缓存（写操作后调用；不触发重算）。
+ * 覆盖：lifecycle install/update/delete/backup、configEdit 各写入、
+ * appmanifest apply（install/update/uninstall/rollback）。
+ */
+export function invalidateAgentsCache(): void {
+  cache = null;
+}
+
+/** 清空缓存并重新探测（写操作后需要立即拿到新快照时用）。 */
 export function refreshSnapshot(): Promise<AgentsResponse> {
   cache = null;
   return getSnapshot();

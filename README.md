@@ -3,7 +3,8 @@
 > 以 **Hermes** 为核心的多 agent 桌面工作台。
 > M1 落地只读内核桥接层；M4 落地 **功能性 Skill 的 UI 宿主协议**（沙箱 iframe + postMessage RPC）
 > 与一个可用的 **PPT demo skill**；**M2-core** 新增 **Agent 生命周期**（安装 / 更新 / 卸载 / 备份）
-> 与一个静态 **小市场**。仍为 web-first：浏览器里即可开发调试，Electron 仅作为后续外壳。
+> 与一个静态 **小市场**；**M2 外壳**落地 **Electron 壳**（`electron/`，复用/拉起 server +
+> 生产静态托管）。仍为 web-first：浏览器里即可开发调试，Electron 为桌面分发外壳。
 
 ## 项目定位
 
@@ -37,7 +38,7 @@
 │     hermes/gateway.ts  hermes serve 子进程 + WS JSON-RPC 客户端（M5.1）               │
 │     hermes/complete.ts 模型补全降级链 gateway → `hermes -z` → stub（M5.1）            │
 │     hermes/mock.ts     无 Hermes 时返回示例 agent                                      │
-│     hermes/index.ts    聚合快照 { agents, status }（带缓存）                           │
+│     hermes/index.ts    聚合快照 { agents, status }（TTL 缓存 + 写后 invalidate）    │
 │                                                                                       │
 └───────────────────────────────────────┬───────────────────────────────────────────────┘
                                          │  只读访问（M1）
@@ -56,13 +57,23 @@
 ├─ tsconfig.node.json     # server + vite.config（Node 环境）
 ├─ vite.config.ts         # root → web/，alias @shared → shared/
 ├─ vitest.config.ts       # vitest（Node 环境，@shared 别名，测试发现）
+├─ scripts/
+│  └─ build-server.mjs    # esbuild 打包 server → dist/server.cjs（单文件 CJS，全量内联）
+├─ electron/
+│  ├─ main.cjs            # Electron 主进程（复用/拉起 server；优先 dist/server.cjs）
+│  └─ preload.cjs         # 最小 preload（仅 { platform }，无 Node/IPC）
 ├─ .gitignore
 ├─ README.md
 ├─ docs/
-│  └─ SKILL_UI_PROTOCOL.md # M4 Skill UI 宿主协议（24os-skill-ui/1）
+│  ├─ SKILL_UI_PROTOCOL.md # M4 Skill UI 宿主协议（24os-skill-ui/1）
+│  ├─ CONFIG_EDITING.md    # M3 配置编辑（官方命令优先）
+│  └─ APP_MANIFEST.md      # M6 AppManifest + M7 hooks/outbound/WS/bots.yaml
 ├─ market/
-│  └─ index.json          # M2-core 小市场静态清单（可安装 distribution）
-├─ shared/types.ts        # Agent / Skill / McpServer / HermesStatus / SkillUi* / Lifecycle* / Market* 等共享类型
+│  ├─ index.json           # M2-core 小市场静态清单（可安装 distribution）
+│  └─ apps/                # M6 内置 AppManifest（*.app.yaml）
+│     ├─ ppt-maker.app.yaml
+│     └─ outline-declarative.app.yaml
+├─ shared/types.ts        # Agent / Skill / McpServer / HermesStatus / SkillUi* / Lifecycle* / Market* / AppManifest 等共享类型
 ├─ examples/
 │  └─ skills/
 │     ├─ ppt/             # M4 命令式 Skill demo（自带 HTML/JS，沙箱 iframe）
@@ -72,8 +83,26 @@
 │        ├─ SKILL.md
 │        └─ ui/{panel.yaml,templates/index.json}
 ├─ server/
-│  ├─ index.ts            # Fastify 启动，注册路由，端口 4319
-│  ├─ market.ts           # 读取 market/index.json → MarketResponse（缺失/损坏降级为空）
+│  ├─ index.ts            # Fastify 启动，注册路由，端口 4319（含生产静态托管接入）
+│  ├─ paths.ts            # APP_ROOT 统一解析（源码 server/ 与打包 dist/server.cjs 同语义）
+│  ├─ staticWeb.ts        # M2 外壳：web/dist 静态托管 + SPA fallback + 防穿越 + token 豁免
+│  ├─ staticWeb.test.ts   # 静态托管 6 类断言单测（临时 dist fixture）
+│  ├─ market.ts           # 读取 market/index.json + 合并 market/apps/*.app.yaml → MarketResponse
+│  ├─ appmanifest/        # M6 AppManifest 编排
+│  │  ├─ manifest.ts      # parse/validate（手写校验）+ builtin catalog
+│  │  ├─ apply.ts         # install / update / uninstall / rollback
+│  │  ├─ events.ts        # 极简事件总线（M7 executor 订阅）
+│  │  ├─ sign.ts          # computeSourceSha256 / verifySign
+│  │  ├─ store.ts         # ~/.24os/apps/<id>.json（原子写 + env 脱敏）
+│  │  └─ *.test.ts
+│  ├─ hooks/              # M7 hooks 执行体
+│  │  ├─ executor.ts      # 订阅 app.* → ui.open/config.apply/notify + 环形日志
+│  │  └─ outbound.ts      # HMAC-SHA256 签名 HTTP 推送（skipped 安全默认）
+│  ├─ dashboard/
+│  │  └─ bus.ts           # M7 Dashboard 广播总线（setBroadcast/broadcast）
+│  ├─ bot/                # M7 Bot Mode
+│  │  ├─ roster.ts        # 解析 ~/.24os/bots.yaml（OS_BOTS_FILE 覆盖）
+│  │  └─ scheduler.ts     # 30s tick + HH:MM 调度（OS_BOT_ENABLED 默认关）
 │  ├─ hermes/
 │  │  ├─ profiles.ts      # 用 yaml 库解析 config.yaml 产出结构化 Agent 列表
 │  │  ├─ profiles.test.ts # YAML 解析 / 描述提取 单测
@@ -89,7 +118,7 @@
 │  │  ├─ lifecycle.test.ts# 生命周期校验 / 备份 / CONFIRM_REQUIRED 单测
 │  │  ├─ errors.ts        # LifecycleError + 错误码 → HTTP 状态映射
 │  │  ├─ mock.ts          # 降级示例数据
-│  │  └─ index.ts         # 快照聚合 + 缓存（变更后可 refreshSnapshot）
+│  │  └─ index.ts         # 快照聚合 + TTL 缓存（invalidateAgentsCache 写后失效）
 │  ├─ testUtils/
 │  │  └─ fakeHermesCli.ts # 测试用假 hermes CLI（记录参数 + 模拟 export）
 │  ├─ skillui/
@@ -100,11 +129,16 @@
 │  │  ├─ tools.ts         # runTool 白名单实现（ppt.export → pptxgenjs）
 │  │  └─ *.test.ts        # 发现 / panel 校验 / 静态安全 / broker / pptx 单测
 │  └─ routes/
-│     ├─ agents.ts        # GET /api/agents, GET /api/agents/:id, M2-core 生命周期 + /api/market
+│     ├─ agents.ts        # GET /api/agents（合并 meta）、:id 详情、生命周期、skills 启停、/api/market*（M6）
 │     ├─ agents.test.ts   # 路由层 fastify.inject 测试
+│     ├─ marketApps.test.ts # M6 市场合并 / apps/:id / apply / agents/install 兼容
 │     ├─ hermes.ts        # GET /api/hermes/status · /api/hermes/gateway[/start|/stop]
 │     ├─ hermes.test.ts   # 状态 / gateway 路由（隔离真实 home）测试
-│     └─ skillUi.ts       # /api/skill-uis, /skill-ui/:id/*, /api/skill-host/invoke
+│     ├─ skillUi.ts       # /api/skill-uis（含 disabled 标注）, /skill-ui/:id/*, /api/skill-host/invoke
+│     ├─ ws.ts            # M7 GET /api/ws Dashboard WebSocket（鉴权同安全基线）
+│     ├─ hooks.ts         # M7 GET /api/hooks/log
+│     ├─ bots.ts          # M7 GET /api/bots · POST enable/disable
+│     └─ m7Routes.test.ts # hooks/bots 路由测试
 └─ web/
    ├─ index.html          # Vite 入口（root = web/）
    ├─ main.tsx            # React 挂载
@@ -115,8 +149,12 @@
    ├─ components/Modal.tsx          # M2-core 通用确认弹窗
    ├─ components/CommandResult.tsx  # 命令 / exit / stdout / stderr 展示
    ├─ components/InstallAgentDialog.tsx # 安装表单 → dryRun 预览 → 确认执行
+   ├─ components/StatusDrawer.tsx     # M7 Dashboard 状态抽屉（WS 事件条 + 指数退避重连）
    ├─ api.ts              # fetch 封装 → http://localhost:4319
    └─ styles.css          # 暗色主题（手写 CSS）
+├─ electron/
+│  ├─ main.cjs            # M2 Electron 主进程（CommonJS + JSDoc，不进 tsconfig）
+│  └─ preload.cjs         # contextBridge 仅暴露 { platform }（最小化，无 Node 能力）
 ```
 
 ## 如何运行
@@ -142,11 +180,88 @@ npm run dev:web      # Vite 前端（自动代理 /api → 4319）
 
 ```bash
 npm run typecheck    # tsc 严格类型检查（web + server 两套配置）
-npm test             # vitest 单元测试（解析 / 描述提取 / 模式判定）
+npm test             # vitest 单元测试
 npm run check        # typecheck + test（推荐的验证命令）
-npm run build        # vite build（产物 dist/web/）+ typecheck
+npm run build        # 构建 dist/web + dist/server.cjs + typecheck
+npm run build:web    # 仅 vite build（产物 dist/web/）
+npm run build:server # 仅 esbuild 打包 server（产物 dist/server.cjs，单文件 CJS）
 npm run start        # 用 tsx 直接跑 server（生产原型模式）
+npm run electron     # 启动 Electron 壳（main = electron/main.cjs）
+npm run dev:desktop  # 先 build:web，再并发 dev:server + electron
+npm run dist         # build + electron-builder --linux（产物 release/*.AppImage / *.deb）
 ```
+
+### Electron 桌面壳（M2 外壳）
+
+```bash
+npm run build        # 先构建 web 产物（dist/web），server 才能静态托管
+npm run electron     # 或 npm run dev:desktop（含 server）
+```
+
+- **启动策略**：探测 `http://127.0.0.1:<PORT>/api/health` 复用已运行的 server；
+  不可用则以 `shell:false` 参数数组 spawn server，**存在 `dist/server.cjs` 时优先用系统 `node`
+  启动该单文件产物（打包形态）**，否则回退 `tsx` 源码启动（读 `package.json#scripts.start`
+  推导，dev 形态不回归），强制 `HOST=127.0.0.1`。窗口加载 `http://127.0.0.1:<PORT>`
+  （server 已静态托管 `dist/web`）。
+- **打包态路径解析**：系统 node 无法读取 asar 虚拟路径，故 `electron-builder` 用
+  `asarUnpack` 把运行时需要真实文件路径的产物解包到 `resources/app.asar.unpacked/`；
+  `electron/main.cjs` 以 `app.getAppPath()` 判定是否在 `app.asar` 内并映射到
+  `app.asar.unpacked`（不硬编码 `resources/` 层级），以此解析入口脚本、`cwd` 与
+  静态产物根（spawn 时显式传 `OS_WEB_DIST` 指向 unpacked `dist/web`，并以 `index.html`
+  存在为前提）。dev/源码路径（无 `dist/server.cjs` → `tsx`）行为不变。
+
+- **关闭策略**：仅当本进程拉起了 server 才 kill 子进程（复用的 dev server 不会误杀）；
+  `SIGINT`/`SIGTERM` 同样走清理。
+- **安全默认**：`contextIsolation: true`、`nodeIntegration: false`、`sandbox: true`；
+  preload 仅 `contextBridge.exposeInMainWorld('desktop', { platform })`。
+- **headless（NAS 无显示器）**：无 `DISPLAY`/`WAYLAND_DISPLAY` 时先以
+  `--ozone-platform=headless` 自举一次（避免 Chromium platform 初始化 SIGTRAP），
+  `app.whenReady()` 后打印
+  `headless 环境无法创建窗口，server 已就绪：http://127.0.0.1:<PORT>`
+  并以 **退出码 0** 结束（清理自启 server，不留残留）。有显示器时正常开窗。
+- **打包（electron-builder）**：已接入 electron-builder@26（配置见 `package.json#build`，
+  `appId: im.24h.os`、`productName: 24H-OS`、`asar: true`、
+  `asarUnpack: [dist/server.cjs, dist/web/**, market/**, examples/skills/**]`、
+  `directories.output: release`，
+  `files: electron/** + dist/server.cjs + dist/web/** + market/** + examples/skills/** + package.json`，
+  `linux.target: [AppImage, deb]`，`linux.category: Utility`；未配置自定义 icon，使用 Electron 默认图标）：
+
+  ```bash
+  npm run dist         # = npm run build && electron-builder --linux
+  ```
+
+  产物：`release/24H-OS-<ver>.AppImage`、`release/<name>_<ver>_amd64.deb`、
+  `release/linux-unpacked/`（内含 `resources/app.asar` 与
+  `resources/app.asar.unpacked/`）。**asarUnpack 方案（而非 `asar:false`）**：保留 asar 主体
+  （安装/完整性/启动更优），仅解包运行时必须为真实文件的 `dist/server.cjs`、`dist/web/**`，
+  以及需要被系统 node `readFileSync`/`readdirSync` 读取的 `market/**`、`examples/skills/**`
+  （系统 node 不认 asar 虚拟路径；`files` 必须同步包含这些路径，否则不会被打进包）。
+  校验：
+  - asar 内包含 `electron/main.cjs`、`electron/preload.cjs`、`package.json`（`dist/*`、`market/*`、`examples/*` 为解包占位）；
+  - `release/linux-unpacked/resources/app.asar.unpacked/dist/server.cjs` 与
+    `.../dist/web/index.html` 存在（系统 node 可直接执行）；
+  - `.../app.asar.unpacked/market/index.json`、`.../market/apps/*.app.yaml`、
+    `.../examples/skills/{ppt,outline}/ui/*` 存在。
+  server 单文件产物由 `scripts/build-server.mjs`（esbuild）生成：**全量内联**（约 2.7 MB，
+  无需运行时 node_modules）；若某依赖不兼容打包则自动回退 `packages:"external"` 并在日志注明。
+  `import.meta.url` 由 esbuild `define` + banner shim 还原为产物自身路径；
+  解包后 `server.cjs` 位于 `app.asar.unpacked/dist/`，`server/paths.ts#APP_ROOT` 自然解析到
+  `app.asar.unpacked/`，`dist/web`、`market/**`、`examples/skills/**` 因此命中同一解包根
+  （`electron/main.cjs` 亦显式传 `OS_WEB_DIST` 兜底；`OS_MARKET_FILE`/`OS_MARKET_APPS_DIR`/
+  `OS_SKILL_ROOTS` 的默认值均基于 `APP_ROOT`，**故无需为子进程额外传这些 env**，用户显式设置的值不被覆盖）。
+
+### 生产静态托管
+
+`server/staticWeb.ts`：当 `dist/web/index.html`（或 `web/dist`，可用 `OS_WEB_DIST` 覆盖）存在时，
+server 兼作静态站点：
+
+- `GET /` 与未知路径 → 送 `index.html`（SPA fallback）；
+- `GET /assets/*` 等 → 送文件（白名单扩展名）；
+- `/api/*`、`/skill-ui/*` 保留给路由，未命中仍返回 JSON 404；
+- 路径解析后必须仍在 dist 根内（防穿越，`/../secret` 一类返回 404）；
+- **token 顺序**：启用静态托管且回环监听时，非 `/api`、`/skill-ui` 的 GET/HEAD
+  可免 `x-24os-token`（浏览器加载页面无法带自定义头）；**非回环监听不豁免**（安全基线不放松）；
+- 构建产物不存在时**行为不变**（纯 API 模式，dev 不受影响）。
 
 ## Hermes 依赖说明
 
@@ -155,9 +270,13 @@ npm run start        # 用 tsx 直接跑 server（生产原型模式）
 - **CLI 候选顺序**：`OS_HERMES_CLI`（显式路径）→ `PATH` 里的 `hermes`（`which`）→
   `~/.local/bin/hermes` → `<home>/bin/hermes`。返回 `cliPath` 与 `cliSource`
   （`env` / `path` / `local-bin` / `hermes-bin`），因此**不在 PATH 上的安装也能被发现**。
+  **显式无效即停**：`OS_HERMES_CLI` 已设置但指向不存在的路径 → CLI 视为不可用
+  （`cliSource:"env"`、`cliPath:null`），**不**再回退 PATH / `~/.local/bin` 探测
+  （与 `cli.ts#resolveHermesCli` 一致）。
 - **HERMES_HOME 解析顺序**：`OS_HERMES_HOME` → `HERMES_HOME`（env）→ `~/.hermes`；
   另探测候选 home：`~/.hermes`、`~/hermes-desktop/home`（含 `config.yaml`/`profiles` 才算有效），
-  状态里暴露 `activeHome` 与 `hermesHomes[]`。
+  状态里暴露 `activeHome` 与 `hermesHomes[]`。显式 home env **无效即停**（目录不存在也直接采用，
+  不静默换家）。
 - **live 模式**：找到 CLI，**或**探测到任一有效 hermes home（有配置 / profiles）→
   读取 `~/.hermes/profiles/<name>/`（每个目录一个 agent）；若没有命名 profile，
   则把生效 home 本身当作名为 `default` 的默认 profile。
@@ -202,14 +321,17 @@ HOST=0.0.0.0 OS_TOKEN=$(openssl rand -hex 16) npm run dev:server
 - `Agent.mcpServers: McpServer[]`（`McpServer { id, name, command?, args?, enabled? }`）
 
 M3 起新增配置编辑相关类型：`AgentConfig`、`McpServerSpec`、`UpdateAgentConfigRequest`、
-`AddMcpServerRequest`、`SetEnvRequest`、`ConfigEditResult`（见 `shared/types.ts`）。
-`McpServer` 增加 `url` / `headers` / `transport`，以支持 http 型 MCP server。
+`AddMcpServerRequest`、`SetEnvRequest`、`SetSkillEnabledRequest`、`ConfigEditResult`（见 `shared/types.ts`）。
+`McpServer` 增加 `url` / `headers` / `transport`，以支持 http 型 MCP server；
+`Agent.tags?` 承接 meta 标签；`SkillUiInfo.disabled?` 标注被禁用的 skill UI。
 
 `server/hermes/profiles.ts` 从 `config.yaml` / `agent.json` 解析出上述结构，
 `mock.ts` 提供同构示例数据，`web/pages/AgentDetail.tsx` 直接渲染 skill 描述、
-MCP command/args 与启用状态；`GET /api/agents/:id` 返回结构化详情。
-`server/hermes/configEdit.ts` 负责配置的读写与安全落盘，前端由
-`web/components/AgentConfigEditor.tsx` 承载编辑界面。
+MCP command/args 与启用状态；`GET /api/agents` 列表与 `GET /api/agents/:id` 详情
+返回结构化数据并**合并工作台 meta**（description / tags / skills 启停，优先级一致）。
+`server/hermes/configEdit.ts` 负责配置的读写与安全落盘（含 skill 启停），
+前端由 `web/components/AgentConfigEditor.tsx` 承载编辑界面；被禁用的 skill 在
+AgentDetail / Skill 列表显示「已禁用」，且**不渲染打开入口**（服务端字段为准）。
 
 ## Skill UI 协议（24os-skill-ui/1）
 
@@ -361,15 +483,18 @@ npm run dev
 
 | 端点 | 说明 |
 | --- | --- |
-| `GET /api/skill-uis` | 列出所有自带 UI 的 skill（`SkillUiInfo[]`，含 `uiHost`）。 |
-| `GET /api/skill-uis/:id` | 单个 UI 信息，未找到 404。 |
-| `GET /api/skill-uis/:id/panel` | 声明式面板规范 `PanelSpec`；非声明式 / 未找到 → 404 `PANEL_NOT_FOUND`。 |
-| `GET /skill-ui/:id/*` | 静态托管该 skill 的 `ui/` 文件（防穿越 + 严格 CSP）。 |
-| `POST /api/skill-host/invoke` | 能力 broker：`{ skillId, method, params }` → `{ ok, result?, error? }`（未声明 capability/permission → 403）。 |
+| `GET /api/skill-uis` | 列出所有自带 UI 的 skill（`SkillUiInfo[]`，含 `uiHost`；被 meta 禁用者标 `disabled:true`）。 |
+| `GET /api/skill-uis/:id` | 单个 UI 信息（含 `disabled` 标注），未找到 404。 |
+| `GET /api/skill-uis/:id/panel` | 声明式面板规范 `PanelSpec`；非声明式 / 未找到 → 404 `PANEL_NOT_FOUND`；**禁用 → 403 `SKILL_DISABLED`**。 |
+| `GET /skill-ui/:id/*` | 静态托管该 skill 的 `ui/` 文件（防穿越 + 严格 CSP）。口径：skill 不存在 404 → **禁用 403 `SKILL_DISABLED`** → 文件缺失/越界 404（先判存在再判禁用；存在性已由列表 API 公开，403 不额外泄露且可与 404 区分）。 |
+| `POST /api/skill-host/invoke` | 能力 broker：`{ skillId, method, params }` → `{ ok, result?, error? }`（未声明 capability/permission → 403；**禁用 → 403 `SKILL_DISABLED`**，iframe 与 declarative 都拦）。 |
 
 skills 根发现顺序：`OS_SKILL_ROOTS` → 仓库 `examples/skills` → `<activeHome>/skills` → `<activeHome>/profiles/*/skills`。
 `<activeHome>` 由 `detect.ts` 解析（M5.0b 起与 agent 来源一致，不再硬编码 `~/.hermes`）。
-`GET /api/agents` 的 `Skill` 新增 `hasUi` / `uiId` 字段。
+`GET /api/agents` 的 `Skill` 新增 `hasUi` / `uiId` 字段；被工作台 meta 标记
+`enabled:false` 的 skill 在详情里 `enabled:false`（前端显示「已禁用」、不渲染打开入口），
+对应 `SkillUiInfo` 也标 `disabled:true`。禁用判定统一在 `server/skillui/disabled.ts`
+（`isSkillDisabled`，每次读盘、与列表 `disabled` 同口径），broker / panel / 静态三条路径强制拦截。
 
 ## Hermes TUI gateway 与模型补全（M5）
 
@@ -429,23 +554,48 @@ server 收到 `SIGINT` / `SIGTERM` 时会 `stop()` 自己拉起的 gateway，避
   `client.capabilities { server_requests:true }`，否则收不到服务端请求。
 - **归一化事件**（`ChatStreamEvent`，`shared/types.ts`）：
   `session` | `delta` | `message` | `thinking` | `tool.start` | `tool.complete` |
-  `approval` | `clarify` | `done` | `error` | `raw`（未知类型原样透出）。
+  `approval` | `clarify` | `done` | `error` | `raw`（未知类型原样透出）；
+  `subagent.*` / `request.cancel` 归入 `session`。
   映射依据 `tui_gateway/contracts/events.py` 与 `contracts/server_requests.py`。
-- **审批策略（安全默认）**：`approval` 回 `deny`、`clarify` 回空答案（跳过）；
-  仅 `OS_GATEWAY_AUTO_APPROVE=1` 时 `approval` 回 `once`、`clarify` 回第一个选项。
-  无论决策如何事件都先透出。依据 `ApprovalChoice`（`once/session/always/deny`）。
+- **审批策略（M5 交互式 + 安全默认）**：
+  - `OS_GATEWAY_AUTO_APPROVE=1` → 立即 `once` / 第一个选项（`autoDecided:true`，不打断 UI）；
+  - SSE（`interactive:true`）→ 挂起 pending，事件携带 `{chatId, id, choices?, prompt?}`，
+    前端渲染决策卡片 → `POST /api/hermes/chat/decide` → `decideApproval` `respond` 回 gateway；
+  - 非交互通道 → 立即安全默认 `deny` / 空答案；
+  - 交互流超时（`decisionTimeoutMs`，默认 120s）/ 结束仍 pending → 自动安全默认兜底 +
+    `decision.fallback` 事件（`reason: timeout|stream_end`）。
+  依据 `ApprovalChoice`（`once/session/always/deny`，`contracts/server_requests.py`）。
+- **模型（M5 热切换 + 昂贵模型二次确认）**：`streamPrompt({model})` → `session.create.model`
+  （`contracts/sessions.py::SessionCreateParams`）+ 随后经 `switchSessionModel` 走
+  `config.set {key:"model", session_id}` 的 **selection guard**（`contracts/config_free_tier_control.py`
+  + `methods_config_set.py::_set_model`；running 会话为 `deferred` 下一 turn 生效）。
+  **契约二次确认键 = `confirm_expensive_model`**（`ConfigSetParams`，Params `extra=forbid`
+  —— 不能发未声明的 `force`；CLI 的 `config set --force` 只跳过 unknown-key 提示，与昂贵模型无关）。
+  工作台对外的 `force` 选项映射为该键。流程：不带 force 且非 `OS_GATEWAY_AUTO_APPROVE=1` 时，
+  昂贵模型 → `confirm_required` → SSE 透出 `session/model.confirm_required` 事件
+  （payload `{ model, confirmRequired, confirmMessage }`）并 **interrupted 结束（不提交 prompt、不静默放行）**；
+  前端 Modal 确认 → 带 `force:true` 重试 SSE；取消 → 明确提示。
+  `OS_GATEWAY_AUTO_APPROVE=1` → 与审批策略一致自动 force。
+  `completePrompt` 的 `hermes -z` 通道支持 `-m/--model`（`hermes_cli/_parser.py`）。
+- **subagent（研究结论）**：gateway v0.21.3 存在观测/控制契约
+  （`subagent.list/interrupt/tail/steer`、`delegation.status/pause`、`spawn_tree.*`、
+  `subagent.*` 事件），**无直接 spawn/run RPC**（子代理由会话内 `delegate_task` 启动）。
+  `POST /api/hermes/subagent`（`confirm:true` 门禁）→ `501 UNSUPPORTED` + 研究结论，
+  `runSubagent` 绝不调模型；待官方 spawn 契约。
 
 | 端点 | 说明 |
 | --- | --- |
-| `POST /api/hermes/chat/stream` | SSE：body `{ profile?, prompt }`，逐条 `data: <ChatStreamEvent>`，`done`/`error` 后结束；客户端断开时 `interrupt` 并清理。 |
+| `POST /api/hermes/chat/stream` | SSE：body `{ profile?, prompt, chatId?, model?, force? }`，逐条 `data: <ChatStreamEvent>`；交互流（approval/clarify 待 decide，超时安全兜底）；客户端断开时 `interrupt` 并清理。`force:true` = 昂贵模型二次确认放行（确认后的重试）。 |
+| `POST /api/hermes/chat/decide` | `{ chatId, type: "approval"\|"clarify", choice?, answer? }` → `{ ok, requestId, decision }`；400 `INVALID_VALUE` · 404 `CHAT_NOT_FOUND` · 409 `DECISION_RESOLVED`。（模型昂贵确认不经此端点——重试走 SSE body `force`。） |
+| `POST /api/hermes/subagent` | `{ profile?, prompt, confirm:true }`；当前 501 `UNSUPPORTED` + 契约研究结论（不调模型）。 |
 
 | 变量 | 作用 | 默认 |
 | --- | --- | --- |
-| `OS_GATEWAY_AUTO_APPROVE` | 设为 `1` 时自动放行审批（`approval→once`、`clarify→第一个选项`） | 关（deny） |
+| `OS_GATEWAY_AUTO_APPROVE` | 设为 `1` 时**优先自动**放行审批（`approval→once`、`clarify→第一个选项`，不打断 UI）**并对昂贵模型切换自动 force**（`confirm_expensive_model:true`）；否则 SSE 交互流挂起待 `chat/decide`，非交互立即安全默认 deny | 关（SSE 交互等待 decide；非交互 deny） |
 
 Skill UI 侧新增 `chatStream` capability（权限 `model:chat`）：`SkillHost.tsx` 读取该 SSE 并把事件以
 `{ __24os:true, type:"event", event:"chat.delta"|"chat.done"|"chat.error"|…, payload }` 转发给 iframe；
-broker 的 REST 路径则把流收集为 `{ text, status, events }`。
+宿主侧同步渲染审批/澄清卡片（M5）与模型下拉；broker 的 REST 路径则把流收集为 `{ text, status, events }`。
 
 ## Agent 生命周期 API（M2-core）
 
@@ -510,7 +660,7 @@ curl -s -X POST localhost:4319/api/agents/reviewer/backup -H 'content-type: appl
 | MCP 增 / 改 | `hermes [-p <id>] config set mcp_servers.<name> <JSON spec>` |
 | MCP 删 | `hermes [-p <id>] config unset mcp_servers.<name>` |
 | env 设 / 删 | `hermes [-p <id>] config set|unset <KEY> [<value>]` |
-| 描述 / 标签 | ——（非 Hermes 字段，恒写 `meta.json`） |
+| 描述 / 标签 / skill 启停 | ——（非 Hermes 字段，恒写 `meta.json`） |
 
 `-p` 规则：`default`（或目录 == activeHome）不加，否则 `-p <id>`；参数一律走 `spawn(shell:false)`。
 MCP 未用交互式 `mcp add`（discovery-first + 无 `mcp update`），详见 `docs/CONFIG_EDITING.md` §0.2。
@@ -525,6 +675,7 @@ MCP 未用交互式 `mcp add`（discovery-first + 无 `mcp update`），详见 `
 | `POST /api/agents/:id/env` | body `{ key, value, confirm? }`，设置环境变量。 |
 | `DELETE /api/agents/:id/env/:key` | body `{ confirm? }`，删除环境变量。 |
 | `POST /api/agents/:id/config/restore` | body `{ backupFileName, confirm? }`，从备份还原（可选）。 |
+| `POST /api/agents/:id/skills` | body `{ name, enabled, confirm:true }`，skill 启停落盘 `meta.json` 的 `skills.<name>.enabled`（未知 skill → 400 `INVALID_SKILL`）。 |
 
 统一返回 `ConfigEditResult { ok, action, via, files, backups, message }`，其中 `via`
 标示本次落盘通道（`"cli"` = 官方命令，`"file"` = 工作台文件写；`"cli"` 时 `files`/`backups` 通常为空）。
@@ -541,6 +692,7 @@ MCP 未用交互式 `mcp add`（discovery-first + 无 `mcp update`），详见 `
 | `PATH_TRAVERSAL` | 400 | 检测到路径穿越（id 或备份文件名）。 |
 | `BACKUP_NOT_FOUND` | 404 | 备份文件不存在。 |
 | `AGENT_NOT_FOUND` | 404 | 找不到对应 profile 目录。 |
+| `INVALID_SKILL` | 400 | skill 启停时名字不在该 agent 已知 skills 列表中。 |
 
 **写操作保证**（文件回退路径）：
 
@@ -574,10 +726,72 @@ curl -s -X POST localhost:4319/api/agents/demo/env -H 'content-type: application
 
 ## 市场（market）
 
-`GET /api/market` 读取仓库内 `market/index.json`，返回静态的 `MarketEntry[]`
-（字段 `id/name/description/source/version/tags`）。文件缺失或损坏时降级为 `{ entries: [], message }`，不报错。
-前端「Agent 市场」Tab 列出条目，点「安装」即用其 `source` 打开安装对话框（同一 dryRun → 确认流程）。
-可用 `OS_MARKET_FILE` 覆盖清单路径（测试用）。
+`GET /api/market` 读取仓库内 `market/index.json`，返回 `MarketEntry[]`
+（字段 `id/name/description/source/version/tags`），并**合并** `market/apps/*.app.yaml`
+（AppManifest）元信息：`uiHost`、`hooks`、`appManifest:true`（同 id 覆盖 version/name；
+仅存在于 apps 的 App 会追加为新条目）。清单文件缺失或损坏时仍会列出 AppManifest 条目，
+不报错。可用 `OS_MARKET_FILE` / `OS_MARKET_APPS_DIR` 覆盖路径（测试用）。
+
+前端「Agent 市场」Tab 列出条目，点「安装」即用其 `source` 打开安装对话框。
+
+### AppManifest（M6 · `24os-appmanifest/1`）
+
+以官方 profile distributions 为底座的 App 交付清单（profile 模板 + skills + mcp + model + env + UI + hooks + plugins + 签名），
+编排 install / update / uninstall / rollback。规范详见 [`docs/APP_MANIFEST.md`](docs/APP_MANIFEST.md)。
+
+| 端点 | 说明 |
+| --- | --- |
+| `GET /api/market` | 静态清单 + AppManifest 元信息合并 |
+| `GET /api/market/apps/:id` | 解析后的 AppManifest（404 `APP_NOT_FOUND`） |
+| `POST /api/market/:id/apply` | body `{ mode: install\|update\|uninstall\|rollback, confirm? }` → `applyAppManifest` |
+| `POST /api/agents/install` | 兼容入口：`{ type:"market", id, mode?, confirm? }` 委托 apply；否则同原 `installAgent` |
+
+安全门禁与写保证：`confirm:true`（缺 → 400 `CONFIRM_REQUIRED` 不碰磁盘）→ update/uninstall 先备份
+`~/.24os/backups` → `~/.24os/apps/<id>.json` **最后一步**原子写且 env 值脱敏为 `"***"` →
+`emitAppEvent("app.install|update|uninstall|rollback")`（M7 executor 订阅后执行 hooks 并广播）。签名校验失败 → 400 `SIGN_MISMATCH`。
+
+```bash
+# 冒烟（隔离 HERMES_HOME + 假 CLI）
+curl -s localhost:4319/api/market | jq '.entries[].id'
+curl -s localhost:4319/api/market/apps/ppt-maker | jq .id
+curl -s -X POST localhost:4319/api/market/ppt-maker/apply \
+  -H 'Content-Type: application/json' -d '{"mode":"install"}'          # → 400 CONFIRM_REQUIRED
+curl -s -X POST localhost:4319/api/market/ppt-maker/apply \
+  -H 'Content-Type: application/json' -d '{"mode":"install","confirm":true}'
+```
+
+## Hooks / Dashboard WS / Bot Mode（M7）
+
+规范详见 [`docs/APP_MANIFEST.md`](docs/APP_MANIFEST.md) §5–§9。
+
+### Hooks 执行体
+
+`server/hooks/executor.ts` 订阅 `app.*` 事件（或直调 `runHook`），执行：
+
+| Hook | 语义 | 广播 |
+| --- | --- | --- |
+| `ui.open` | 前端据 `skillId` 打开 Skill UI | `hook.ui.open` |
+| `config.apply` | configEdit 官方命令优先重放 model/mcp/env | `hook.config.apply`（`via`） |
+| `notify` | `outbound.pushNotify` HMAC 签名推送 | `hook.notify` |
+
+环形日志（最近 100）→ `GET /api/hooks/log`；异常 catch 记录不抛穿。
+
+**outbound 签名**：`x-24os-timestamp` + `x-24os-signature: sha256=<HMAC(token, ts.body)>`；
+无 endpoint / 明文 token → `skipped`（不报错、不回显 token）。
+
+### Dashboard WS（`GET /api/ws`）
+
+- 协议：服务端→客户端 `{type, at, payload?}`；客户端 `{type:"ping"}` → `{type:"pong"}`；连上先收 `hello`。
+- 鉴权同安全基线：回环匿名；非回环必须 `?token=` 或 `x-24os-token` == `OS_TOKEN`，否则 401。
+- 广播：app 生命周期 / hook 结果 / gateway 状态 / `chat.delta|done|error` 摘要（**仅 len，无正文**）/ `bot.run`。
+- 30s 心跳；前端 `StatusDrawer` 最近 50 条事件 + 指数退避重连。
+
+### Bot Mode
+
+- 花名册 `~/.24os/bots.yaml`（`OS_BOTS_FILE` 覆盖；样例 `bots.example.yaml`）：`id` / `schedule:"HH:MM"` / `profile` / `prompt` / `notify[]` / `enabled`。
+- 调度：30s tick 比对 `HH:MM`，到点且今日未跑 → `streamPrompt`（回退 `completePrompt`）→ `pushNotify` → 广播 `bot.run` → 环形日志。
+- **安全默认**：`OS_BOT_ENABLED=1` 才启动（默认关，避免意外调模型）。
+- API：`GET /api/bots`（列表 + nextRun + lastRun）、`POST /api/bots/:id/enable|disable`（内存态）、`GET /api/bots/log`。
 
 ## 测试与验证
 
@@ -615,12 +829,30 @@ curl -s -X POST localhost:4319/api/agents/demo/env -H 'content-type: application
    `GatewayClient` 用**本地 mock WS 服务器**验证 id 关联、事件通知回调、RPC 错误与超时、
    会话方法参数、服务端请求 `onRequest`/`respond`；
    `completePrompt` 注入假 CLI 验证 gateway→oneshot→stub 三级降级与 `via`、`-p` profile 透传。
-  8. **M5.2 会话 / 流式**——`chat.test.ts` 用本地 mock gateway 验证事件归一化序列（delta→done）、
-   未知事件透出 `raw`、审批默认 deny / `OS_GATEWAY_AUTO_APPROVE=1` 回 `once`、
-   abort 触发 `session.interrupt`；`hermes.test.ts` 用 `fastify.inject` 验证 SSE 事件流与错误帧；
-   `discover.test.ts` 验证 M5.0b 的 `activeHome` 影响 skill 扫描目录。
+   8. **M5.2 会话 / 流式**——`chat.test.ts` 用本地 mock gateway 验证事件归一化序列（delta→done）、
+    未知事件透出 `raw`、审批默认 deny / `OS_GATEWAY_AUTO_APPROVE=1` 回 `once`、
+    abort 触发 `session.interrupt`；`hermes.test.ts` 用 `fastify.inject` 验证 SSE 事件流与错误帧；
+    `discover.test.ts` 验证 M5.0b 的 `activeHome` 影响 skill 扫描目录。
+   9. **M6 AppManifest**——`manifest.test.ts` 合法/非法（id 正则、version、unknown hook、
+      bad ui.host、protocol 不匹配、source/env）→ `INVALID_MANIFEST`；内置 catalog 含
+      `ppt-maker` / `outline-declarative`；`apply.test.ts` 用假 CLI + 临时目录验证
+      install（config set 调用、`apps/<id>.json` env 脱敏 `***`、`emit app.install`、skills 复制）、
+      缺 confirm → `CONFIRM_REQUIRED` 不落盘、uninstall 先 export 备份再删、
+      update 备份 + history、rollback 恢复上一版快照、sign 篡改 → `SIGN_MISMATCH`；
+      `marketApps.test.ts` 覆盖 `/api/market` 合并、`/api/market/apps/:id`、
+      `/api/market/:id/apply` confirm 门禁、`/api/agents/install` 兼容委托。
+   10. **M7 hooks / WS / Bot Mode**——`outbound.test.ts` HMAC 可复算、无 endpoint/token → `skipped`、
+       mock fetch 断言签名头；`executor.test.ts` app.install → ui.open/notify 广播 + 异常记入 log；
+       `ws.test.ts` 真实 server 收 hello / broadcast / ping→pong、`checkWsAuth` 非回环 401；
+       `roster.test.ts` id/schedule 校验、`scheduler.test.ts` 假时钟 09:00 触发 / 同分钟去重 /
+       `enabled:false` 不跑 / `bot.run` 广播；`m7Routes.test.ts` `GET /api/hooks/log`、`GET /api/bots`。
+   11. **M2 外壳静态托管**——`staticWeb.test.ts`（11 例，临时 dist fixture）：`resolveWebDistRoot`
+       候选顺序（`OS_WEB_DIST` / `dist/web` / `web/dist`）；`/` → index.html、`/assets/app.js` → 200、
+       `/foo/bar` → SPA fallback 200、`/../secret` 及编码穿越 → 404 拒；缺失带扩展名资源不 fallback；
+       非白名单扩展名拒；`/api`、`/skill-ui` 保留路径不进 fallback；无 dist 时行为不变（纯 API 404）；
+       `shouldBypassWebToken` 仅回环 + 静态 + GET/HEAD 豁免。
 - **验证命令统一为 `npm run check`**（等价于 `npm run typecheck && npm test`）。
-  当前共 **200** 个用例。
+  当前共 **333** 个用例（含 M2 杂项 detect 对齐 / skill 启停 / 缓存失效 / 列表 meta 合并新增）。
 
 ```bash
 npm run check
@@ -636,20 +868,37 @@ npm run check
 - ~~**M5.0b**：skillui 发现统一到 `detect` 解析的 `activeHome`~~ ✅ 已完成。
 - ~~**M5.1**：TUI gateway（`hermes serve` JSON-RPC/WS）+ `callModel` 三级降级链（gateway → `hermes -z` → stub）~~ ✅ 已完成（`llm.oneshot` 通道）。
 - ~~**M5.2**：会话（`session.create`/`prompt.submit`/`interrupt`/`close`）+ 流式事件 + SSE 路由 + 审批安全默认 + Skill UI `chatStream`~~ ✅ 已完成。
-- **M2（剩余）**：Electron 外壳；Skill 的安装/启停落盘；CLI 变更后的实时刷新优化。
-- **M5（剩余）**：`session.resume`/`session.list` 等会话浏览、subagent、模型热切换；审批的交互式授权（当前自动 deny / `OS_GATEWAY_AUTO_APPROVE=1` 放行）。
-- **M2+**：Skill 安装/启停；MCP 网关（连接/调试 MCP server）；模型切换。
+- ~~**M5.3**：交互式审批/clarify 授权（`chatId`/`decideApproval`/`chat/decide` + 前端决策卡片 + 安全兜底）、模型热切换（`session.create.model` + `config.set model` + SSE `model?` + 前端下拉 + `hermes -z -m`）、subagent 契约研究（观测存在 / spawn 不存在 → unsupported 封装）~~ ✅ 已完成。
+- ~~**M6**：AppManifest（`24os-appmanifest/1`）安装/更新/卸载/回滚编排 + market 增强 + 签名 + 事件总线~~ ✅ 已完成。
+- ~~**M7**：hooks 执行体（`ui.open`/`config.apply`/`notify`）+ Dashboard WS `/api/ws` + Bot Mode（默认关）+ 前端状态抽屉~~ ✅ 已完成。
+- ~~**M2 外壳**：Electron 壳（`electron/main.cjs` + `preload.cjs`，复用/拉起 server + 生产静态托管 + headless 退出 0）~~ ✅ 已完成。
+- ~~**M2 杂项**：Skill 启停落盘（`POST /api/agents/:id/skills` + `skill-uis.disabled`）；CLI 变更后实时刷新（`invalidateAgentsCache`）；`GET /api/agents` 列表合并 meta description/tags；`OS_HERMES_CLI` 显式无效不回退~~ ✅ 已完成。
+- ~~**M2 打包**：electron-builder（`package.json#build` + `scripts/build-server.mjs` + `npm run dist`，产出 AppImage/deb + asar）~~ ✅ 已完成。
+- ~~**M2 打包修复**：`asarUnpack` 解包 `dist/server.cjs` / `dist/web/**` + `electron/main.cjs` 打包态路径映射（`app.asar` → `app.asar.unpacked`），修掉系统 node 无法读取 asar 的首启缺陷~~ ✅ 已完成。
+- **M5（剩余）**：`session.resume`/`session.list` 等会话浏览；subagent **spawn**（官方契约待暴露，
+  当前仅观测/控制面 + unsupported 封装）；昂贵模型 `confirm_expensive_model` 交互确认。
+  ~~审批交互式授权、模型热切换~~ ✅ 已完成（M5.3）。
+- **M2+**：MCP 网关（连接/调试 MCP server）；模型切换。
 - 代码内以 `TODO(M2+)` / `TODO(M5)` 注释标出了各扩展点。
 
 ## 已知偏差
 
 - `index.html` 放在 `web/` 下（因为 Vite `root` 指向 `web/`），而非项目根目录。
-- `build` 采用 `vite build` + `tsc --noEmit`；server 不产出编译产物，运行时由 `tsx` 直接执行 TS。
+- `build` = `vite build`（dist/web）+ `scripts/build-server.mjs`（dist/server.cjs，单文件 CJS）
+  + `tsc --noEmit`。dev 仍由 `tsx` 直接执行 TS；打包/`node dist/server.cjs` 走 esbuild 产物。
+- **打包后 server 由“系统 node”启动**（沿用现有 node 探测）：已用 `asarUnpack` 把
+  `dist/server.cjs` / `dist/web/**` / `market/**` / `examples/skills/**` 解包到
+  `resources/app.asar.unpacked/`，`electron/main.cjs` 经 `app.getAppPath()` 映射路径后 spawn；
+  NAS 无显示器已实测**打包态 headless 首启**（起 server → `/api/health` 200 →
+  `/api/market` 5 条含 `ppt-maker` → `/api/skill-uis` 含 `ppt`+`outline` → 退出 0，无残留）。
+  未验证的是有显示器时的**开窗**路径（无 GUI 环境）。
 - M5.1 的 `callModel` 已接入真实 Hermes：默认走 gateway 的 `llm.oneshot`；gateway 不可用时
-  降级为 `hermes -z`，再不可用才回退 `[stub]`。`llm.oneshot` 是**无状态**补全（无会话上下文），
-  会话/流式/审批等仍属 M5 剩余项。
-- M5.0 的 `detect.ts` 会探测 `~/.local/bin/hermes` 等非 PATH 位置；`resolveHermesCli` 在
-  `OS_HERMES_CLI` 已设置但路径不存在时返回“不可用”，不再回退到自动探测（便于测试隔离）。
+  降级为 `hermes -z`，再不可用才回退 `[stub]`。`llm.oneshot` 是**无状态**补全（无会话上下文，
+  契约无 model 字段；model 覆盖仅作用于 `hermes -z` 通道）。
+  会话/流式/交互式审批/模型热切已完成（M5.2/M5.3）；subagent spawn 契约待官方。
+- M5.0 的 `detect.ts` 会探测 `~/.local/bin/hermes` 等非 PATH 位置；`resolveHermesCli` 与
+  `resolveCliPathSync` 在 `OS_HERMES_CLI` 已设置但路径不存在时都返回“不可用”
+  （`cliSource:"env"` / `cliPath:null`），**不再回退到自动探测**（与 `cli.ts` 对齐，便于测试隔离）。
 - M4.1 的 `panel.yaml` 校验为**手写**（未引入 zod），与既有 `parseManifest` 风格一致、依赖最小；
   非法 panel 视为“无声明式 UI”，`GET .../panel` 返回 404。
 - 声明式面板**不支持任意 JS**，因此 `ui/panel.yaml` 形态不会被 broker 的 capability/permission
@@ -660,9 +909,10 @@ npm run check
   `HERMES_CLI_UNAVAILABLE`（这是有意的优雅降级）。`OS_HERMES_CLI` 可指向自定义 CLI 便于本地验证。
 - 生命周期操作直接改变 `~/.hermes`（安装/更新/删除）；删除默认先备份到 `~/.24os/backups/`，
   备份失败会中止删除。前端对破坏性操作强制两段式（dryRun 预览 + 确认弹窗）。
-- M3 配置编辑的**描述 / 标签**存放在工作台自有元数据 `~/.24os/agents/<id>/meta.json`，
-  未写入 Hermes 自身文件（避免猜测其内部字段）；`GET /api/agents` 列表的描述仍来自
-  `AGENT.md`/`README.md` 等，暂未合并 meta.json（后续可对齐）。
+- M3 配置编辑的**描述 / 标签 / skill 启停**存放在工作台自有元数据 `~/.24os/agents/<id>/meta.json`，
+  未写入 Hermes 自身文件（避免猜测其内部字段）；`GET /api/agents` **列表与详情**都会合并
+  meta 的 `description` / `tags`（meta 非空 description 覆盖 config 内描述；无 meta 保持现状）
+  与 `skills[].enabled`（无记录默认 true）。
 - `setEnvVar` 在检测到 `hermes` CLI 时优先执行 `hermes config set <KEY> <VALUE>`（值作为单个
   参数、无 shell）；CLI 不可用或失败时回退为直接编辑 `.env`。为保证密钥不外泄，无论走哪条
   路径，响应都不回显命令与明文值。当前环境下默认无 CLI，实际走 `.env` 直写路径。

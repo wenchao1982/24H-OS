@@ -28,6 +28,12 @@ export interface CompleteResult {
 export interface CompleteOptions {
   /** 目标 profile（透传给 gateway / `-p`）。 */
   profile?: string;
+  /**
+   * 模型覆盖（M5）：oneshot 通道透传 `hermes -m/--model`（契约：
+   * hermes_cli/_parser.py 顶层 `-m/--model` 与 `-z` 配对）。
+   * gateway `llm.oneshot` 契约无 model 字段，该通道忽略 model。
+   */
+  model?: string;
   /** 解析 CLI 路径；默认 detectHermes。 */
   resolveCliPath?: () => Promise<string | null>;
   /** gateway 补全；默认 ensureGateway + client.complete。 */
@@ -40,7 +46,7 @@ export interface CompleteOptions {
   runOneshot?: (
     cliPath: string,
     prompt: string,
-    options: { profile?: string },
+    options: { profile?: string; model?: string },
   ) => Promise<string>;
   /** 是否允许桩降级（默认 true）。 */
   allowStub?: boolean;
@@ -70,16 +76,17 @@ async function defaultGatewayComplete(
 }
 
 /**
- * 一次性补全：`hermes [-p <profile>] -z <prompt>`。
- * prompt 作为**单个**参数传递，绝不经过 shell。
+ * 一次性补全：`hermes [-p <profile>] [-m <model>] -z <prompt>`。
+ * prompt / model 作为**单个**参数传递，绝不经过 shell。
  */
 export async function runOneshotViaCli(
   cliPath: string,
   prompt: string,
-  options: { profile?: string; timeoutMs?: number } = {},
+  options: { profile?: string; model?: string; timeoutMs?: number } = {},
 ): Promise<string> {
   const args: string[] = [];
   if (options.profile) args.push("-p", options.profile);
+  if (options.model) args.push("-m", options.model);
   args.push("-z", prompt);
 
   return await new Promise<string>((resolve, reject) => {
@@ -165,7 +172,10 @@ export async function completePrompt(
     }
 
     try {
-      const text = await oneshot(cliPath, prompt, { profile: options.profile });
+      const text = await oneshot(cliPath, prompt, {
+        profile: options.profile,
+        model: options.model,
+      });
       return finalize({ text, via: "oneshot" });
     } catch (error) {
       errors.push(`oneshot: ${(error as Error).message}`);
