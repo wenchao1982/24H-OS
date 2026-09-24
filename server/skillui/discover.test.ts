@@ -2,7 +2,12 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { discoverSkillUis, findSkillUi, parseManifest } from "./discover";
+import {
+  discoverSkillUis,
+  findSkillUi,
+  getSkillRoots,
+  parseManifest,
+} from "./discover";
 
 /** 在临时根目录下写一个 skill（可选是否带 ui/manifest.json）。 */
 function writeSkill(
@@ -23,6 +28,25 @@ function writeSkill(
     );
     writeFileSync(path.join(uiDir, "index.html"), "<!doctype html>", "utf8");
   }
+}
+
+/** 在临时根目录下写一个声明式 skill（ui/panel.yaml，无 manifest）。 */
+function writePanelSkill(root: string, dirName: string, skill: string): void {
+  const skillDir = path.join(root, dirName);
+  const uiDir = path.join(skillDir, "ui");
+  mkdirSync(uiDir, { recursive: true });
+  writeFileSync(path.join(skillDir, "SKILL.md"), `# ${dirName}\n`, "utf8");
+  writeFileSync(
+    path.join(uiDir, "panel.yaml"),
+    [
+      "protocol: 24os-skill-panel/1",
+      `skill: ${skill}`,
+      `title: 面板 ${skill}`,
+      "fields: []",
+      "actions: []",
+    ].join("\n"),
+    "utf8",
+  );
 }
 
 const tempDirs: string[] = [];
@@ -68,7 +92,7 @@ describe("discoverSkillUis —— 发现自带 UI 的 skill", () => {
     expect(alpha.hasUi).toBe(true);
     expect(alpha.title).toBe("UI alpha");
     expect(alpha.uiRoot).toBe(path.join(root, "alpha", "ui"));
-    expect(alpha.manifest.entry).toBe("index.html");
+    expect(alpha.manifest?.entry).toBe("index.html");
   });
 
   it("同名 id 以先出现的根为准", () => {
@@ -87,6 +111,89 @@ describe("discoverSkillUis —— 发现自带 UI 的 skill", () => {
     writeSkill(root, "gamma", validManifest("gamma"));
     expect(findSkillUi("gamma", [root])?.id).toBe("gamma");
     expect(findSkillUi("missing", [root])).toBeNull();
+  });
+
+  it("uiHost 判定：panel.yaml→declarative、manifest.json→iframe、都有→iframe", () => {
+    const root = makeRoot();
+    writePanelSkill(root, "decl", "decl");
+    writeSkill(root, "ifr", validManifest("ifr"));
+
+    // 同时存在两者：manifest 优先。
+    const bothDir = path.join(root, "both");
+    mkdirSync(path.join(bothDir, "ui"), { recursive: true });
+    writeFileSync(path.join(bothDir, "SKILL.md"), "# both\n", "utf8");
+    writeFileSync(
+      path.join(bothDir, "ui", "manifest.json"),
+      JSON.stringify(validManifest("both")),
+      "utf8",
+    );
+    writeFileSync(path.join(bothDir, "ui", "index.html"), "<!doctype html>", "utf8");
+    writeFileSync(
+      path.join(bothDir, "ui", "panel.yaml"),
+      "protocol: 24os-skill-panel/1\nskill: both\ntitle: both\nfields: []\nactions: []\n",
+      "utf8",
+    );
+
+    const byId = new Map(discoverSkillUis([root]).map((item) => [item.id, item]));
+
+    const decl = byId.get("decl");
+    expect(decl?.uiHost).toBe("declarative");
+    expect(decl?.manifest).toBeUndefined();
+    expect(decl?.panel?.skill).toBe("decl");
+    expect(decl?.title).toBe("面板 decl");
+
+    const ifr = byId.get("ifr");
+    expect(ifr?.uiHost).toBe("iframe");
+    expect(ifr?.manifest?.entry).toBe("index.html");
+    expect(ifr?.panel).toBeUndefined();
+
+    const both = byId.get("both");
+    expect(both?.uiHost).toBe("iframe");
+    expect(both?.manifest).toBeDefined();
+    expect(both?.panel).toBeUndefined();
+  });
+});
+
+describe("getSkillRoots —— activeHome 决定扫描目录（M5.0b）", () => {
+  const savedRoots = process.env.OS_SKILL_ROOTS;
+
+  afterEach(() => {
+    if (savedRoots === undefined) delete process.env.OS_SKILL_ROOTS;
+    else process.env.OS_SKILL_ROOTS = savedRoots;
+  });
+
+  it("activeHome 变化时 skills / profiles/*/skills 根随之变化", () => {
+    delete process.env.OS_SKILL_ROOTS;
+    const homeA = makeRoot();
+    const homeB = makeRoot();
+    mkdirSync(path.join(homeA, "skills"), { recursive: true });
+    mkdirSync(path.join(homeA, "profiles", "alpha", "skills"), { recursive: true });
+    mkdirSync(path.join(homeB, "skills"), { recursive: true });
+
+    const rootsA = getSkillRoots(homeA);
+    expect(rootsA).toContain(path.resolve(path.join(homeA, "skills")));
+    expect(rootsA).toContain(path.resolve(path.join(homeA, "profiles", "alpha", "skills")));
+    expect(rootsA).not.toContain(path.resolve(path.join(homeB, "skills")));
+
+    const rootsB = getSkillRoots(homeB);
+    expect(rootsB).toContain(path.resolve(path.join(homeB, "skills")));
+    expect(rootsB).not.toContain(path.resolve(path.join(homeA, "skills")));
+  });
+
+  it("discoverSkillUis(getSkillRoots(home)) 随 activeHome 切换发现不同 skill", () => {
+    delete process.env.OS_SKILL_ROOTS;
+    const homeA = makeRoot();
+    const homeB = makeRoot();
+    writeSkill(path.join(homeA, "skills"), "only-a", validManifest("only-a"));
+    writeSkill(path.join(homeB, "skills"), "only-b", validManifest("only-b"));
+
+    const idsA = discoverSkillUis(getSkillRoots(homeA)).map((item) => item.id);
+    expect(idsA).toContain("only-a");
+    expect(idsA).not.toContain("only-b");
+
+    const idsB = discoverSkillUis(getSkillRoots(homeB)).map((item) => item.id);
+    expect(idsB).toContain("only-b");
+    expect(idsB).not.toContain("only-a");
   });
 });
 

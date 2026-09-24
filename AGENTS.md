@@ -10,6 +10,7 @@
 - **一个 Hermes profile = 一个 agent**（`~/.hermes/profiles/<name>/`；无命名 profile 时，`~/.hermes` 本身视为 `default`）。
 - 复用 Hermes 原语：`profiles`、`profile distributions`（install/update/delete）、`skills/`、`mcp_servers`、`hermes` CLI、`hermes serve`（TUI gateway JSON-RPC）。
 - **差异化核心 = 功能性 Skill 的 UI 宿主**：Hermes 的 skill 只有 `SKILL.md`、没有 UI；24H-OS 让功能性 skill 自带前端，在**沙箱 iframe** 中运行，通过 **postMessage RPC** 按需调用宿主能力（调模型 / 读写文件 / 跑工具）。
+- **两种 UI 形态并存**：命令式 `ui/manifest.json`（`uiHost:"iframe"`）；声明式 `ui/panel.yaml`（`uiHost:"declarative"`，M4.1，零代码无任意 JS，宿主渲染表单/模板/预览/动作）。两者都有时优先 manifest。
 
 ## 2. 架构
 
@@ -17,9 +18,9 @@ web-first（无显示器环境亦可开发；Electron 仅为未来外壳）：
 
 - `server/` — Fastify 内核桥接层，端口 **4319**，封装 `hermes` CLI 与 `~/.hermes`
 - `web/` — React 18 + TypeScript + Vite，dev 端口 **5173**（自动代理 `/api` → 4319）
-- `shared/` — 前后端共享 TS 类型（alias `@shared/*`）
-- `docs/` — `SKILL_UI_PROTOCOL.md`、`CONFIG_EDITING.md`
-- `examples/skills/` — 示例功能性 skill（`ppt`，带 UI）
+- `shared/` — 前后端共享 TS 类型 + `panel.ts`（插值工具，alias `@shared/*`）
+- `docs/` — `SKILL_UI_PROTOCOL.md`（命令式 + 声明式）、`CONFIG_EDITING.md`
+- `examples/skills/` — 示例功能性 skill（`ppt` 命令式、`outline` 声明式）
 - `market/index.json` — 静态市场清单
 
 ## 3. 常用命令
@@ -37,7 +38,7 @@ npm run build          # vite build + typecheck
 
 ## 4. 硬性约定（务必遵守）
 
-- **验证命令固定为 `npm run check`**；提交前必须通过（当前 154 个用例）。
+- **验证命令固定为 `npm run check`**；提交前必须通过（当前 200 个用例）。
 - **配置写入官方命令优先**（v3.0 §4.2）：模型 / MCP / env 先试 `hermes [-p <id>] config set|unset ...`
   （`shell:false`；`default` 不加 `-p`），成功返回 `via:"cli"`；CLI 不可用 / 失败才回退文件写
   （`via:"file"`）。避免与 Hermes 进程并发写 config.yaml。MCP 用 `config set/unset mcp_servers.<name>`
@@ -67,13 +68,15 @@ npm run build          # vite build + typecheck
 - `server/hermes/profiles.ts` — 用 `yaml` 解析 `config.yaml` → 结构化 `Agent`
 - `server/hermes/cli.ts` — 安全执行 `hermes`（spawn + 白名单 + dryRun）
 - `server/hermes/detect.ts` — CLI 候选探测（env/PATH/local-bin/hermes-bin）+ 多 home（M5.0）+ `resolveCliHome` 包装脚本 home（M5.x）
-- `server/hermes/gateway.ts` — `hermes serve` 子进程 + WS JSON-RPC 客户端 / 单例（M5.1）
+- `server/hermes/gateway.ts` — `hermes serve` 子进程 + WS JSON-RPC 客户端 / 单例（M5.1）；会话方法与服务端请求（M5.2）
+- `server/hermes/chat.ts` — `streamPrompt` 会话 + 流式事件归一化（`ChatStreamEvent`）+ 审批安全默认（M5.2）
 - `server/hermes/complete.ts` — 模型补全降级链 `completePrompt`（gateway → `hermes -z` → stub）
 - `server/hermes/lifecycle.ts` — install/update/delete/backup
 - `server/hermes/configEdit.ts` — 模型 / 描述 / MCP / env 的安全落盘（官方命令优先 + `via`）
-- `server/skillui/` — Skill UI 发现 / 静态托管 / broker / 工具（`ppt.export`）
-- `web/components/SkillHost.tsx` — Skill UI 宿主 + RPC broker + 调试面板
-- `shared/types.ts` — 所有前后端共享类型（改 API 先改这里）
+- `server/skillui/` — Skill UI 发现（`discover.ts`，manifest/panel 判定）/ 声明式面板解析校验（`panel.ts`）/ 静态托管 / broker / 工具（`ppt.export`）
+- `web/components/SkillHost.tsx` — 命令式 Skill UI 宿主 + RPC broker + 调试面板
+- `web/components/DeclarativePanel.tsx` — 声明式面板渲染（表单 / 模板 / 预览 / SSE）
+- `shared/types.ts` / `shared/panel.ts` — 共享类型与 `{{key}}` 插值工具（改 API 先改这里）
 
 ## 7. 环境变量
 
@@ -86,6 +89,7 @@ npm run build          # vite build + typecheck
 | `OS_GATEWAY_PORT` | TUI gateway 固定端口 | `0`（OS 自选） |
 | `OS_GATEWAY_ISOLATED` | 设为 `1` 时 gateway 加 `--isolated` | 关 |
 | `OS_GATEWAY_START_TIMEOUT_MS` | 等待 `HERMES_BACKEND_READY` 超时 | `30000` |
+| `OS_GATEWAY_AUTO_APPROVE` | 设为 `1` 时自动放行审批（`approval→once`、`clarify→第一个选项`）；否则默认 deny | 关 |
 | `OS_BACKUP_DIR` / `OS_CONFIG_BACKUP_DIR` | 备份根目录 | `~/.24os/backups` |
 | `OS_META_DIR` | 工作台元数据根 | `~/.24os/agents` |
 | `OS_SKILL_ROOTS` | Skill UI 扫描根（逗号分隔） | 仓库 `examples/skills` + `~/.hermes/skills` 等 |
@@ -95,11 +99,11 @@ npm run build          # vite build + typecheck
 
 ## 8. 当前状态与路线图
 
-已完成：**M1**（只读骨架）、**M1.1**（加固）、**M4**（Skill UI 宿主 + PPT demo）、**M2-core**（生命周期 + 市场）、**M3**（配置编辑落盘）、**M5.0**（CLI/多 home 探测）、**M5.1**（TUI gateway + `callModel` 降级链，走 `llm.oneshot`）、**M5.x**（配置写入官方命令优先 + `via`；`resolveCliHome` 统一 home）。
+已完成：**M1**（只读骨架）、**M1.1**（加固）、**M4**（Skill UI 宿主 + PPT demo）、**M4.1**（声明式 `ui/panel.yaml` 面板 + `outline` demo，零代码 / 无任意 JS，与命令式并存）、**M2-core**（生命周期 + 市场）、**M3**（配置编辑落盘）、**M5.0**（CLI/多 home 探测）、**M5.1**（TUI gateway + `callModel` 降级链，走 `llm.oneshot`）、**M5.x**（配置写入官方命令优先 + `via`；`resolveCliHome` 统一 home）、**M5.0b**（skillui 发现统一到 `activeHome`）、**M5.2**（`session.create`/`prompt.submit`/`session.interrupt`/`session.close` + 流式事件归一化 + SSE `/api/hermes/chat/stream` + 审批安全默认 + Skill UI `chatStream`）。
 
 待办：
 
-- **M5 剩余**：会话管理 / 流式事件（`session.create` + `prompt.submit` + `message.*` 事件契约已探明）、审批/clarify、subagent、模型热切换。
+- **M5 剩余**：`session.resume`/`session.list` 等会话浏览、审批交互式授权、subagent、模型热切换。
 - **M2 剩余**：Electron 外壳；Skill 安装/启停落盘；CLI 变更后的实时刷新。
 - 其他：`runTool` 仅白名单 `ppt.export`；权限提示目前自动放行（未接交互式授权）；`GET /api/agents` 列表描述尚未合并 `meta.json`。
 

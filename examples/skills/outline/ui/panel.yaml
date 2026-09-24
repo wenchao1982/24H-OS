@@ -1,0 +1,49 @@
+protocol: 24os-skill-panel/1
+skill: outline
+title: 大纲生成
+view: form
+description: 选主题、定深度，一键生成结构化大纲（零代码声明式面板）
+
+fields:
+  - key: topic
+    label: 主题
+    type: text
+    required: true
+    placeholder: 例如：AI 产品年度规划
+  - key: audience
+    label: 目标读者
+    type: select
+    options:
+      - value: 管理层
+        label: 管理层
+      - value: 工程师
+        label: 工程师
+      - value: 大众读者
+        label: 大众读者
+  - key: depth
+    label: 层级深度
+    type: slider
+    min: 1
+    max: 4
+    default: 2
+  - key: template
+    label: 结构模板
+    type: select
+    options_from: templates/index.json
+  - key: notes
+    label: 补充要求
+    type: textarea
+    placeholder: 可补充风格、必须包含的章节等
+
+templates:
+  dir: templates/
+  index: templates/index.json
+
+actions:
+  - id: run
+    label: 生成大纲
+    kind: prompt
+    prompt: |
+      请以「{{topic}}」为主题，面向{{audience}}，生成一份 {{depth}} 级深度的结构化大纲。
+      结构模板：{{template}}。
+      补充要求：{{notes}}

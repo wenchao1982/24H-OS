@@ -2,6 +2,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type {
+  ChatStreamEvent,
   SkillFileReadResult,
   SkillFileWriteResult,
   SkillHostInvokeRequest,
@@ -13,6 +14,7 @@ import type {
 import { findSkillUi } from "./discover";
 import { exportPptx } from "./tools";
 import { completePrompt, type CompleteResult } from "../hermes/complete";
+import { streamPrompt } from "../hermes/chat";
 
 /**
  * 能力 broker：把 Skill UI 的 RPC 请求映射到宿主能力，并做双重门禁
@@ -36,11 +38,14 @@ export type ModelCompleter = (
 export interface InvokeDeps {
   /** 替换 callModel 的实现；默认走 completePrompt 降级链。 */
   complete?: ModelCompleter;
+  /** 替换 chatStream 的实现；默认走 streamPrompt。 */
+  chatStream?: typeof streamPrompt;
 }
 
 /** 每个方法额外要求的 permission（runTool 动态按 tool 名推导）。 */
 const CAPABILITY_PERMISSION: Partial<Record<SkillUiCapability, string>> = {
   callModel: "model:call",
+  chatStream: "model:chat",
   readFile: "fs:read:workspace",
   writeFile: "fs:write:workspace",
 };
@@ -92,12 +97,13 @@ export interface InvokeOutcome {
 
 /** 校验方法是否在 skill 声明的 capabilities 内。 */
 function hasCapability(skill: SkillUiInfo, method: string): method is SkillUiCapability {
-  return (skill.manifest.capabilities as readonly string[]).includes(method);
+  const capabilities = skill.manifest?.capabilities ?? [];
+  return (capabilities as readonly string[]).includes(method);
 }
 
-/** 校验 skill 是否声明了某权限。 */
+/** 校验 skill 是否声明了某权限（声明式面板无 manifest，恒 false）。 */
 function hasPermission(skill: SkillUiInfo, permission: string): boolean {
-  return skill.manifest.permissions.includes(permission);
+  return (skill.manifest?.permissions ?? []).includes(permission);
 }
 
 async function dispatch(
@@ -164,6 +170,29 @@ async function dispatch(
         return ok({ text: result.text, via: result.via, stub: result.stub ?? false });
       } catch (error) {
         return fail(502, "MODEL_CALL_FAILED", `模型调用失败：${(error as Error).message}`);
+      }
+    }
+
+    case "chatStream": {
+      const prompt = typeof params.prompt === "string" ? params.prompt : "";
+      const profile = typeof params.profile === "string" ? params.profile : undefined;
+      const run = deps.chatStream ?? streamPrompt;
+      const events: ChatStreamEvent[] = [];
+      let text = "";
+      try {
+        const result = await run({
+          prompt,
+          profile,
+          onEvent: (event) => {
+            events.push(event);
+            if ((event.type === "delta" || event.type === "message") && event.text) {
+              text += event.text;
+            }
+          },
+        });
+        return ok({ text, status: result.status, events });
+      } catch (error) {
+        return fail(502, "CHAT_STREAM_FAILED", `流式对话失败：${(error as Error).message}`);
       }
     }
 

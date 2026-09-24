@@ -234,10 +234,69 @@ interface PendingCall {
   timer: NodeJS.Timeout;
 }
 
-/** gateway 事件通知处理函数。 */
+/** gateway 事件通知处理函数（收到 `method:"event"` 的 params）。 */
 export type GatewayEventHandler = (
   params: Record<string, unknown>,
 ) => void;
+
+/**
+ * 服务端→客户端请求（approval / clarify / sudo / secret 等）。
+ * 客户端须先声明 `client.capabilities {server_requests:true}` 才会收到。
+ */
+export interface GatewayServerRequest {
+  /** 请求 id（如 `srq-<hex>`）；respond() 时原样回传。 */
+  id: string;
+  /** 请求方法名，例如 `approval` / `clarify`。 */
+  method: string;
+  /** 请求参数（含 session_id）。 */
+  params: Record<string, unknown>;
+}
+
+/** 服务端请求处理器。 */
+export type GatewayRequestHandler = (request: GatewayServerRequest) => void;
+
+/** session.create 参数（对齐 contracts/sessions.py::SessionCreateParams）。 */
+export interface CreateSessionParams {
+  profile?: string;
+  title?: string;
+  cwd?: string;
+  model?: string;
+  provider?: string;
+  reasoning_effort?: string;
+  /** 存在即契约：省略继承，true 固定 priority，false 固定 normal。 */
+  fast?: boolean;
+  hidden?: boolean;
+  messages?: unknown[];
+  parent_session_id?: string;
+  close_on_disconnect?: boolean;
+  [key: string]: unknown;
+}
+
+/** session.create 结果。 */
+export interface SessionCreateResult {
+  session_id: string;
+  stored_session_id?: string;
+  message_count?: number;
+  messages?: unknown[];
+  info?: Record<string, unknown>;
+}
+
+/** prompt.submit 结果。 */
+export interface PromptSubmitResult {
+  status?: string;
+  [key: string]: unknown;
+}
+
+/** session.interrupt 结果。 */
+export interface SessionInterruptResult {
+  status: string;
+  interrupted?: boolean;
+}
+
+/** session.close 结果。 */
+export interface SessionCloseResult {
+  closed: boolean;
+}
 
 /**
  * 一个 gateway WebSocket 连接：按 id 关联 JSON-RPC 请求/响应，
@@ -254,6 +313,7 @@ export class GatewayClient {
   private nextId = 0;
   private readonly pending = new Map<string, PendingCall>();
   private readonly eventHandlers = new Set<GatewayEventHandler>();
+  private readonly requestHandlers = new Set<GatewayRequestHandler>();
 
   constructor(options: GatewayClientOptions) {
     this.port = options.port;
@@ -290,6 +350,9 @@ export class GatewayClient {
         settled = true;
         clearTimeout(timer);
         this.ws = ws;
+        // 声明客户端能力：允许后端发起服务端→客户端请求（approval / clarify）。
+        // 官方契约：服务端请求仅在客户端上报 server_requests:true 后下发。
+        this.notify("client.capabilities", { server_requests: true });
         resolve();
       });
 
@@ -322,6 +385,68 @@ export class GatewayClient {
   onEvent(handler: GatewayEventHandler): () => void {
     this.eventHandlers.add(handler);
     return () => this.eventHandlers.delete(handler);
+  }
+
+  /** 订阅服务端→客户端请求（approval / clarify）。返回取消订阅函数。 */
+  onRequest(handler: GatewayRequestHandler): () => void {
+    this.requestHandlers.add(handler);
+    return () => this.requestHandlers.delete(handler);
+  }
+
+  /**
+   * 回应一个服务端请求（JSON-RPC 响应帧）。
+   * 返回是否成功送出（连接断开时为 false，不抛错）。
+   */
+  respond(id: string, result: Record<string, unknown>): boolean {
+    return this.sendFrame({ jsonrpc: "2.0", id, result });
+  }
+
+  /** 以 JSON-RPC error 回应一个服务端请求。 */
+  respondError(id: string, code: number, message: string): boolean {
+    return this.sendFrame({ jsonrpc: "2.0", id, error: { code, message } });
+  }
+
+  /** 发送一条无 id 的 JSON-RPC 通知（如 client.capabilities）。 */
+  notify(method: string, params: Record<string, unknown> = {}): boolean {
+    return this.sendFrame({ jsonrpc: "2.0", method, params });
+  }
+
+  /** 创建会话：`session.create` → `{ session_id, ... }`。 */
+  async createSession(
+    params: CreateSessionParams = {},
+  ): Promise<SessionCreateResult> {
+    return await this.call<SessionCreateResult>("session.create", params);
+  }
+
+  /** 提交一轮用户输入：`prompt.submit { session_id, text }`。 */
+  async submitPrompt(
+    sessionId: string,
+    text: string,
+    params: Record<string, unknown> = {},
+  ): Promise<PromptSubmitResult> {
+    return await this.call<PromptSubmitResult>("prompt.submit", {
+      session_id: sessionId,
+      text,
+      ...params,
+    });
+  }
+
+  /** 中断会话当前 turn：`session.interrupt { session_id }`。 */
+  async interrupt(sessionId: string): Promise<SessionInterruptResult> {
+    return await this.call<SessionInterruptResult>(
+      "session.interrupt",
+      { session_id: sessionId },
+      { timeoutMs: 15_000 },
+    );
+  }
+
+  /** 关闭会话：`session.close { session_id }`。 */
+  async closeSession(sessionId: string): Promise<SessionCloseResult> {
+    return await this.call<SessionCloseResult>(
+      "session.close",
+      { session_id: sessionId },
+      { timeoutMs: 15_000 },
+    );
   }
 
   /** 发送一次 JSON-RPC 调用并按 id 等待结果。 */
@@ -429,6 +554,18 @@ export class GatewayClient {
     );
   }
 
+  /** 发送任意 JSON-RPC 帧；连接不可用时返回 false。 */
+  private sendFrame(frame: unknown): boolean {
+    const ws = this.ws;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+    try {
+      ws.send(JSON.stringify(frame));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   private handleMessage(data: WebSocket.RawData): void {
     let frame: unknown;
     try {
@@ -449,6 +586,32 @@ export class GatewayClient {
           handler(params);
         } catch {
           // 单个订阅者异常不影响其它订阅者。
+        }
+      }
+      return;
+    }
+
+    // 服务端→客户端请求：带 method 且 id 不是本客户端的 pending 调用
+    // （JSON-RPC 双向；响应帧无 method，请求帧有）。
+    if (
+      typeof obj.id === "string" &&
+      typeof obj.method === "string" &&
+      !this.pending.has(obj.id)
+    ) {
+      const params =
+        obj.params && typeof obj.params === "object"
+          ? (obj.params as Record<string, unknown>)
+          : {};
+      const request: GatewayServerRequest = {
+        id: obj.id,
+        method: obj.method,
+        params,
+      };
+      for (const handler of this.requestHandlers) {
+        try {
+          handler(request);
+        } catch {
+          // 单个处理器异常不影响其它订阅者。
         }
       }
       return;

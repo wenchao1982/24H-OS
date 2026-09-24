@@ -231,4 +231,45 @@ describe("invokeSkill —— 工具 / 模型桩", () => {
     expect(outcome.status).toBe(200);
     expect(outcome.body.ok).toBe(true);
   });
+
+  it("chatStream 收集 delta 文本（注入 streamPrompt）并透传 status/events", async () => {
+    writeSkill(skillsRoot, "t-chat", {
+      capabilities: ["chatStream"],
+      permissions: ["model:chat"],
+    });
+    const outcome = await invokeSkill(
+      {
+        skillId: "t-chat",
+        method: "chatStream",
+        params: { prompt: "你好", profile: "writer" },
+      },
+      {
+        chatStream: async (options) => {
+          options.onEvent?.({ type: "delta", text: "你" });
+          options.onEvent?.({ type: "delta", text: "好" });
+          options.onEvent?.({ type: "done", text: "你好", status: "complete" });
+          return { sessionId: "s1", status: "done" };
+        },
+      },
+    );
+    expect(outcome.status).toBe(200);
+    const result = outcome.body.result as { text: string; status: string; events: unknown[] };
+    expect(result.text).toBe("你好");
+    expect(result.status).toBe("done");
+    expect(result.events).toHaveLength(3);
+  });
+
+  it("chatStream 未声明 model:chat 权限 → 403 PERMISSION_NOT_DECLARED", async () => {
+    writeSkill(skillsRoot, "t-chat-noauth", {
+      capabilities: ["chatStream"],
+      permissions: [],
+    });
+    const outcome = await invokeSkill({
+      skillId: "t-chat-noauth",
+      method: "chatStream",
+      params: { prompt: "hi" },
+    });
+    expect(outcome.status).toBe(403);
+    expect(outcome.body.error?.code).toBe("PERMISSION_NOT_DECLARED");
+  });
 });

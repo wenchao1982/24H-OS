@@ -5,21 +5,39 @@ import {
   GatewayClient,
   parseBackendReadyLine,
   parseSessionToken,
+  type GatewayServerRequest,
 } from "./gateway";
 
+/** 收到的客户端帧。 */
+interface ReceivedFrame {
+  id?: string;
+  method?: string;
+  params?: Record<string, unknown>;
+}
+
 /** 起一个本地 mock gateway WS 服务器。 */
-async function makeMockServer(): Promise<{ wss: WebSocketServer; port: number }> {
+async function makeMockServer(): Promise<{
+  wss: WebSocketServer;
+  port: number;
+  received: ReceivedFrame[];
+}> {
+  const received: ReceivedFrame[] = [];
   const wss = new WebSocketServer({ host: "127.0.0.1", port: 0 });
   await new Promise<void>((resolve) => wss.once("listening", () => resolve()));
 
   wss.on("connection", (socket: WsSocket) => {
     socket.on("message", (data) => {
-      let req: { id?: string; method?: string; params?: unknown };
+      let req: { id?: string; method?: string; params?: Record<string, unknown> };
       try {
         req = JSON.parse(data.toString()) as typeof req;
       } catch {
         return;
       }
+      received.push(req);
+
+      // 通知（无 id）不回应，也不发测试事件。
+      if (req.id === undefined) return;
+
       // 每个请求前先发一个事件通知，验证事件分发。
       socket.send(
         JSON.stringify({
@@ -43,6 +61,24 @@ async function makeMockServer(): Promise<{ wss: WebSocketServer; port: number }>
         case "llm.oneshot":
           result = { text: "hi" };
           break;
+        case "session.create":
+          result = {
+            session_id: "sess-1",
+            stored_session_id: "stored-1",
+            message_count: 0,
+            messages: [],
+            info: { profile_name: req.params?.profile ?? "default" },
+          };
+          break;
+        case "prompt.submit":
+          result = { status: "streaming" };
+          break;
+        case "session.interrupt":
+          result = { status: "interrupted", interrupted: true };
+          break;
+        case "session.close":
+          result = { closed: true };
+          break;
         default:
           error = { code: 4004, message: "method not found" };
       }
@@ -54,7 +90,7 @@ async function makeMockServer(): Promise<{ wss: WebSocketServer; port: number }>
   });
 
   const port = (wss.address() as AddressInfo).port;
-  return { wss, port };
+  return { wss, port, received };
 }
 
 const openServers: WebSocketServer[] = [];
@@ -67,13 +103,25 @@ afterEach(async () => {
   }
 });
 
-async function makeClient(): Promise<{ client: GatewayClient; port: number }> {
-  const { wss, port } = await makeMockServer();
+async function makeClient(): Promise<{
+  client: GatewayClient;
+  port: number;
+  received: ReceivedFrame[];
+}> {
+  const { wss, port, received } = await makeMockServer();
   openServers.push(wss);
   const client = new GatewayClient({ port, token: "test-token", connectTimeoutMs: 3000 });
   openClients.push(client);
   await client.connect();
-  return { client, port };
+  return { client, port, received };
+}
+
+/** 轮询等待直到 predicate 为真或超时。 */
+async function waitFor(predicate: () => boolean, timeoutMs = 500): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline && !predicate()) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
 }
 
 describe("parseBackendReadyLine", () => {
@@ -139,5 +187,108 @@ describe("GatewayClient —— JSON-RPC over WS", () => {
     await expect(
       client.call("ignore.forever", {}, { timeoutMs: 120 }),
     ).rejects.toMatchObject({ code: "GATEWAY_TIMEOUT" });
+  });
+
+  it("连接后自动声明 client.capabilities（server_requests:true）", async () => {
+    const { received } = await makeClient();
+    await waitFor(() => received.some((f) => f.method === "client.capabilities"));
+    const frame = received.find((f) => f.method === "client.capabilities");
+    expect(frame?.params).toMatchObject({ server_requests: true });
+    expect(frame?.id).toBeUndefined();
+  });
+
+  it("createSession/submitPrompt/interrupt/closeSession 走对应方法与参数", async () => {
+    const { client, received } = await makeClient();
+    const created = await client.createSession({ title: "t", profile: "p" });
+    expect(created.session_id).toBe("sess-1");
+    const submitted = await client.submitPrompt("sess-1", "你好");
+    expect(submitted.status).toBe("streaming");
+    const interrupted = await client.interrupt("sess-1");
+    expect(interrupted.status).toBe("interrupted");
+    const closed = await client.closeSession("sess-1");
+    expect(closed.closed).toBe(true);
+
+    const methods = received.map((f) => f.method);
+    expect(methods).toEqual(
+      expect.arrayContaining([
+        "session.create",
+        "prompt.submit",
+        "session.interrupt",
+        "session.close",
+      ]),
+    );
+    expect(received.find((f) => f.method === "session.create")?.params).toMatchObject({
+      title: "t",
+      profile: "p",
+    });
+    expect(received.find((f) => f.method === "prompt.submit")?.params).toMatchObject({
+      session_id: "sess-1",
+      text: "你好",
+    });
+  });
+
+  it("服务端→客户端请求：onRequest 收到并可 respond 回应", async () => {
+    const wss = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+    openServers.push(wss);
+    await new Promise<void>((resolve) => wss.once("listening", () => resolve()));
+    const port = (wss.address() as AddressInfo).port;
+
+    let socket: WsSocket | null = null;
+    const responses: Array<Record<string, unknown>> = [];
+    wss.on("connection", (s) => {
+      socket = s;
+      s.on("message", (data) => {
+        responses.push(JSON.parse(data.toString()) as Record<string, unknown>);
+      });
+    });
+
+    const client = new GatewayClient({ port, token: "t", connectTimeoutMs: 3000 });
+    openClients.push(client);
+    await client.connect();
+
+    const seen: GatewayServerRequest[] = [];
+    const off = client.onRequest((request) => seen.push(request));
+    socket!.send(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: "srq-1",
+        method: "approval",
+        params: { session_id: "s1", request_id: "r1", command: "rm -rf /", choices: ["once", "deny"] },
+      }),
+    );
+    await waitFor(() => seen.length > 0);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toMatchObject({ id: "srq-1", method: "approval" });
+    expect(seen[0].params).toMatchObject({ request_id: "r1" });
+
+    expect(client.respond("srq-1", { choice: "deny" })).toBe(true);
+    await waitFor(() => responses.some((frame) => frame.id === "srq-1"));
+    expect(responses).toContainEqual({
+      jsonrpc: "2.0",
+      id: "srq-1",
+      result: { choice: "deny" },
+    });
+    off();
+  });
+
+  it("respondError 回 JSON-RPC error 帧", async () => {
+    const wss = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+    openServers.push(wss);
+    await new Promise<void>((resolve) => wss.once("listening", () => resolve()));
+    const port = (wss.address() as AddressInfo).port;
+    const responses: Array<Record<string, unknown>> = [];
+    wss.on("connection", (s) => {
+      s.on("message", (data) => responses.push(JSON.parse(data.toString()) as Record<string, unknown>));
+    });
+    const client = new GatewayClient({ port, token: "t", connectTimeoutMs: 3000 });
+    openClients.push(client);
+    await client.connect();
+    expect(client.respondError("srq-2", 4001, "denied")).toBe(true);
+    await waitFor(() => responses.some((frame) => frame.id === "srq-2"));
+    expect(responses).toContainEqual({
+      jsonrpc: "2.0",
+      id: "srq-2",
+      error: { code: 4001, message: "denied" },
+    });
   });
 });

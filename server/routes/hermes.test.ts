@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import Fastify, { type FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { StreamPromptOptions } from "../hermes/chat";
 import { hermesRoutes } from "./hermes";
 
 /**
@@ -95,5 +96,73 @@ describe("POST /api/hermes/gateway/stop", () => {
     });
     expect(res.statusCode).toBe(200);
     expect(res.json().running).toBe(false);
+  });
+});
+
+/** 解析 SSE 响应体为事件数组。 */
+function parseSse(body: string): Array<Record<string, unknown>> {
+  return body
+    .split("\n\n")
+    .map((chunk) => chunk.trim())
+    .filter((chunk) => chunk.startsWith("data:"))
+    .map((chunk) => JSON.parse(chunk.slice("data:".length).trim()) as Record<string, unknown>);
+}
+
+describe("POST /api/hermes/chat/stream —— SSE", () => {
+  it("空 prompt → 400 INVALID_VALUE（未接管响应）", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/hermes/chat/stream",
+      payload: { prompt: "   " },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toBe("INVALID_VALUE");
+  });
+
+  it("把归一化事件逐条推送，done 后结束响应", async () => {
+    const sseApp = Fastify();
+    await sseApp.register(hermesRoutes, {
+      streamPrompt: async (options: StreamPromptOptions) => {
+        options.onEvent?.({ type: "delta", sessionId: "s1", text: "你" });
+        options.onEvent?.({ type: "delta", sessionId: "s1", text: "好" });
+        options.onEvent?.({ type: "done", sessionId: "s1", text: "你好", status: "complete" });
+        return { sessionId: "s1", status: "done" };
+      },
+    });
+
+    const res = await sseApp.inject({
+      method: "POST",
+      url: "/api/hermes/chat/stream",
+      payload: { prompt: "hi", profile: "p" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["content-type"]).toContain("text/event-stream");
+    const events = parseSse(res.body);
+    expect(events.map((event) => event.type)).toEqual(["delta", "delta", "done"]);
+    expect(events[2].text).toBe("你好");
+    await sseApp.close();
+  });
+
+  it("streamPrompt 抛错 → 推送 error 事件（含错误码）", async () => {
+    const sseApp = Fastify();
+    await sseApp.register(hermesRoutes, {
+      streamPrompt: async () => {
+        const { lifecycleError } = await import("../hermes/errors");
+        throw lifecycleError("GATEWAY_UNAVAILABLE", "no cli");
+      },
+    });
+
+    const res = await sseApp.inject({
+      method: "POST",
+      url: "/api/hermes/chat/stream",
+      payload: { prompt: "hi" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const events = parseSse(res.body);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ type: "error", reason: "GATEWAY_UNAVAILABLE" });
+    await sseApp.close();
   });
 });

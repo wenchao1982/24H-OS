@@ -64,9 +64,13 @@
 │  └─ index.json          # M2-core 小市场静态清单（可安装 distribution）
 ├─ shared/types.ts        # Agent / Skill / McpServer / HermesStatus / SkillUi* / Lifecycle* / Market* 等共享类型
 ├─ examples/
-│  └─ skills/ppt/         # M4 功能性 Skill demo（PPT 工作台）
-│     ├─ SKILL.md
-│     └─ ui/{manifest.json,index.html,main.js,styles.css}
+│  └─ skills/
+│     ├─ ppt/             # M4 命令式 Skill demo（自带 HTML/JS，沙箱 iframe）
+│     │  ├─ SKILL.md
+│     │  └─ ui/{manifest.json,index.html,main.js,styles.css}
+│     └─ outline/         # M4.1 声明式 Skill demo（零代码，只有 panel.yaml）
+│        ├─ SKILL.md
+│        └─ ui/{panel.yaml,templates/index.json}
 ├─ server/
 │  ├─ index.ts            # Fastify 启动，注册路由，端口 4319
 │  ├─ market.ts           # 读取 market/index.json → MarketResponse（缺失/损坏降级为空）
@@ -89,11 +93,12 @@
 │  ├─ testUtils/
 │  │  └─ fakeHermesCli.ts # 测试用假 hermes CLI（记录参数 + 模拟 export）
 │  ├─ skillui/
-│  │  ├─ discover.ts      # 扫描 skills 根，发现含 ui/manifest.json 的 skill
-│  │  ├─ static.ts        # UI 静态托管路径安全 + CSP/MIME
+│  │  ├─ discover.ts      # 扫描 skills 根，发现 ui/manifest.json(iframe) 或 ui/panel.yaml(声明式)
+│  │  ├─ panel.ts         # M4.1 解析/校验 ui/panel.yaml（24os-skill-panel/1）
+│  │  ├─ static.ts        # UI 静态托管路径安全 + CSP/MIME（含 yaml/yml/md）
 │  │  ├─ broker.ts        # 能力 broker：capability/permission 门禁 + 工作区沙箱
 │  │  ├─ tools.ts         # runTool 白名单实现（ppt.export → pptxgenjs）
-│  │  └─ *.test.ts        # 发现 / 静态安全 / broker 门禁 / pptx 生成 单测
+│  │  └─ *.test.ts        # 发现 / panel 校验 / 静态安全 / broker / pptx 单测
 │  └─ routes/
 │     ├─ agents.ts        # GET /api/agents, GET /api/agents/:id, M2-core 生命周期 + /api/market
 │     ├─ agents.test.ts   # 路由层 fastify.inject 测试
@@ -105,7 +110,8 @@
    ├─ main.tsx            # React 挂载
    ├─ App.tsx             # 整体布局（Agents / Skill 市场 / Agent 市场 Tab + 安装入口）
    ├─ pages/AgentDetail.tsx
-   ├─ components/SkillHost.tsx      # M4 Skill UI 宿主 + RPC broker + 调试面板
+   ├─ components/SkillHost.tsx      # M4 命令式 Skill UI 宿主 + RPC broker + 调试面板
+   ├─ components/DeclarativePanel.tsx # M4.1 声明式面板渲染（表单/模板/预览/SSE）
    ├─ components/Modal.tsx          # M2-core 通用确认弹窗
    ├─ components/CommandResult.tsx  # 命令 / exit / stdout / stderr 展示
    ├─ components/InstallAgentDialog.tsx # 安装表单 → dryRun 预览 → 确认执行
@@ -243,12 +249,12 @@ MCP command/args 与启用状态；`GET /api/agents/:id` 返回结构化详情�
 - UI → 宿主：`{ __24os: true, id, method, params }`
 - 宿主 → UI：`{ __24os: true, id, ok, result? , error? }`
 - 握手：宿主在 iframe `load` 后发 `{ __24os: true, type: "host.init", payload: { protocol, capabilities, permissions, sessionNonce } }`；UI 就绪回 `{ __24os: true, type: "ui.ready" }`。
-- 方法：`callModel`（M5.1 起走真实 Hermes，三级降级：gateway → `hermes -z` → stub，见下节）、`readFile`、`writeFile`、`runTool`、`emitEvent`、`resize`。
+- 方法：`callModel`（M5.1 起走真实 Hermes，三级降级：gateway → `hermes -z` → stub，见下节）、`chatStream`（M5.2 起走 gateway 会话 SSE，事件经 `type:"event"` 转发，见 §M5.2）、`readFile`、`writeFile`、`runTool`、`emitEvent`、`resize`。
 
 **安全边界**：
 
 - 宿主校验 `event.source === iframe.contentWindow`、`__24os === true`，且 `method ∈ capabilities`；
-- 静态托管防目录穿越，仅服务白名单扩展名（html/js/css/json/png/svg/woff2）；
+- 静态托管防目录穿越，仅服务白名单扩展名（html/js/css/json/png/svg/woff2 + M4.1 的 yaml/yml/md）；
 - 严格 CSP：`default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'none'` + `X-Content-Type-Options: nosniff`（UI 自身禁止联网，一切能力走 RPC）；
 - broker 双重门禁（capability + permission）；`readFile`/`writeFile` 限制在 `~/.24os/workspace/<skillId>/`（防穿越）。
 
@@ -277,16 +283,92 @@ npm run dev
 OS_SKILL_ROOTS=/abs/path/to/skills,$HOME/.hermes/skills npm run dev:server
 ```
 
+### 声明式面板（24os-skill-panel/1，M4.1）
+
+> 为不具备前端能力的 skill 作者提供**零代码** UI：只写一个 `ui/panel.yaml`，
+> 宿主自动渲染表单 / 模板画廊 / 预览 / 动作按钮。**无任意 JS**，比 iframe 形态更安全。
+> 与命令式形态**并存**：`ui/manifest.json` = 命令式（`uiHost:"iframe"`），
+> `ui/panel.yaml` = 声明式（`uiHost:"declarative"`）；两者都有时**优先 manifest**。
+
+```
+<skills-root>/<skillId>/
+  SKILL.md
+  ui/
+    panel.yaml          # 协议声明（protocol/skill/title/view/fields/templates/preview/actions）
+    templates/index.json  # 可选：模板清单（select.options_from / 画廊）
+```
+
+`ui/panel.yaml`（v1）：
+
+```yaml
+protocol: 24os-skill-panel/1
+skill: outline
+title: 大纲生成
+view: form              # form | wizard（wizard 当前按 form 渲染）
+description: 选主题、定深度，一键生成大纲
+fields:
+  - key: topic
+    label: 主题
+    type: text          # text | textarea | select | slider | file
+    required: true
+    placeholder: 例如：AI 产品年度规划
+  - key: depth
+    label: 层级深度
+    type: slider
+    min: 1
+    max: 4
+    default: 2
+  - key: template
+    label: 结构模板
+    type: select
+    options_from: templates/index.json   # 相对 ui/ 的动态枚举
+templates:
+  dir: templates/
+  index: templates/index.json
+actions:
+  - id: run
+    label: 生成大纲
+    kind: prompt        # 目前仅 prompt
+    prompt: |           # {{field_key}} 插值
+      请以「{{topic}}」为主题，生成 {{depth}} 级深度的结构化大纲。
+```
+
+**校验规则**：`protocol` 必须匹配；`fields[].type` 在枚举内；`select` 需有非空
+`options` 或 `options_from`；`actions[].kind` 恒为 `prompt` 且 `prompt` 必填非空；
+非法 panel.yaml 视为“无声明式 UI”（`validatePanel` 另返回带原因的失败）。校验为
+**手写**（不引入 zod，保持依赖最小）。
+
+**DeclarativePanel 支持的能力**：text / textarea / select（`options_from` 拉取 JSON）/
+slider / file（仅本地读取为文本或 base64 data URL，**不上传**）；`templates/index.json`
+缩略图画廊；`preview`（iframe / markdown）同源沙箱预览；动作按钮把插值后的 prompt
+经 `POST /api/hermes/chat/stream`（SSE）流式展示（delta / 工具 / 审批 / 完成 / 错误，
+可中断）；必填字段校验 + `{{key}}` 缺失策略（默认空串，可 keep / error）。
+
+#### outline demo 怎么打开
+
+仓库内置声明式 demo：`examples/skills/outline/`（无任何 JS/HTML）。
+
+```bash
+npm run dev
+#   web → http://localhost:5173
+```
+
+1. 左侧 **「Skill 市场」** Tab → `大纲生成`（标注「声明式面板」）→「打开 Skill UI」；
+2. 填主题 / 目标读者 / 层级深度 / 补充要求（结构模板可下拉或点画廊）；
+3. 点「生成大纲」→ 右侧流式输出；未接真实 Hermes 时会降级提示。
+
 ### /api 新增端点
 
 | 端点 | 说明 |
 | --- | --- |
-| `GET /api/skill-uis` | 列出所有自带 UI 的 skill（`SkillUiInfo[]`）。 |
+| `GET /api/skill-uis` | 列出所有自带 UI 的 skill（`SkillUiInfo[]`，含 `uiHost`）。 |
 | `GET /api/skill-uis/:id` | 单个 UI 信息，未找到 404。 |
+| `GET /api/skill-uis/:id/panel` | 声明式面板规范 `PanelSpec`；非声明式 / 未找到 → 404 `PANEL_NOT_FOUND`。 |
 | `GET /skill-ui/:id/*` | 静态托管该 skill 的 `ui/` 文件（防穿越 + 严格 CSP）。 |
 | `POST /api/skill-host/invoke` | 能力 broker：`{ skillId, method, params }` → `{ ok, result?, error? }`（未声明 capability/permission → 403）。 |
 
-skills 根发现顺序：`OS_SKILL_ROOTS` → 仓库 `examples/skills` → `~/.hermes/skills` → `~/.hermes/profiles/*/skills`。
+skills 根发现顺序：`OS_SKILL_ROOTS` → 仓库 `examples/skills` → `<activeHome>/skills` → `<activeHome>/profiles/*/skills`。
+`<activeHome>` 由 `detect.ts` 解析（M5.0b 起与 agent 来源一致，不再硬编码 `~/.hermes`）。
 `GET /api/agents` 的 `Skill` 新增 `hasUi` / `uiId` 字段。
 
 ## Hermes TUI gateway 与模型补全（M5）
@@ -336,6 +418,34 @@ params `{ input, profile?, max_tokens?, temperature? }` → result `{ text }`。
 
 server 收到 `SIGINT` / `SIGTERM` 时会 `stop()` 自己拉起的 gateway，避免残留 `hermes serve` 进程。
 新增错误码：`GATEWAY_UNAVAILABLE`(503) / `GATEWAY_TIMEOUT`(504) / `GATEWAY_RPC_ERROR`(502)。
+
+### 会话与流式（M5.2）
+
+`server/hermes/chat.ts#streamPrompt` 在 gateway 上串起
+`session.create` → `prompt.submit` → 事件订阅 → `session.close`，并把原始帧归一化：
+
+- **会话方法**（`GatewayClient`）：`createSession(params)`、`submitPrompt(sessionId, text)`、
+  `interrupt(sessionId)`、`closeSession(sessionId)`；连接建立后自动发
+  `client.capabilities { server_requests:true }`，否则收不到服务端请求。
+- **归一化事件**（`ChatStreamEvent`，`shared/types.ts`）：
+  `session` | `delta` | `message` | `thinking` | `tool.start` | `tool.complete` |
+  `approval` | `clarify` | `done` | `error` | `raw`（未知类型原样透出）。
+  映射依据 `tui_gateway/contracts/events.py` 与 `contracts/server_requests.py`。
+- **审批策略（安全默认）**：`approval` 回 `deny`、`clarify` 回空答案（跳过）；
+  仅 `OS_GATEWAY_AUTO_APPROVE=1` 时 `approval` 回 `once`、`clarify` 回第一个选项。
+  无论决策如何事件都先透出。依据 `ApprovalChoice`（`once/session/always/deny`）。
+
+| 端点 | 说明 |
+| --- | --- |
+| `POST /api/hermes/chat/stream` | SSE：body `{ profile?, prompt }`，逐条 `data: <ChatStreamEvent>`，`done`/`error` 后结束；客户端断开时 `interrupt` 并清理。 |
+
+| 变量 | 作用 | 默认 |
+| --- | --- | --- |
+| `OS_GATEWAY_AUTO_APPROVE` | 设为 `1` 时自动放行审批（`approval→once`、`clarify→第一个选项`） | 关（deny） |
+
+Skill UI 侧新增 `chatStream` capability（权限 `model:chat`）：`SkillHost.tsx` 读取该 SSE 并把事件以
+`{ __24os:true, type:"event", event:"chat.delta"|"chat.done"|"chat.error"|…, payload }` 转发给 iframe；
+broker 的 REST 路径则把流收集为 `{ text, status, events }`。
 
 ## Agent 生命周期 API（M2-core）
 
@@ -482,6 +592,13 @@ curl -s -X POST localhost:4319/api/agents/demo/env -H 'content-type: application
      静态托管安全（`../` 穿越被拒、非白名单扩展名被拒）；broker 门禁（未声明 capability → 403、
      工作区越界 → 403、未声明权限 → 403、非白名单工具 → 400）；`ppt.export` 生成非空 pptx；
      `callModel` 经 `completePrompt`（注入 stub）并透传 prompt/profile。
+  4b. **M4.1 声明式面板**——`validatePanel` 合法/非法（错误 protocol、未知 type、
+     select 缺 options、action 缺 prompt / kind 非 prompt、key 重复、min>max）；
+     `parsePanelYaml` 解析仓库 `examples/skills/outline`；`interpolatePrompt` 多字段 /
+     缺失 empty|keep|error / 0|false|空串；`discover` 的 `uiHost` 判定（panel→declarative、
+     manifest→iframe、两者→iframe）；静态托管放行 yaml/yml/md 且穿越仍被拒；
+     `GET /api/skill-uis`、`GET /api/skill-uis/:id/panel`（PanelSpec / 404）、
+     `GET /skill-ui/:id/panel.yaml` 路由行为。
   5. **M2-core 生命周期**——用**假 hermes CLI**（临时目录里的可执行脚本，把参数写入 `calls.log`，
      并模拟 `profile export -o` 落盘）注入测试：命令白名单拒绝非法子命令（`COMMAND_NOT_ALLOWED`）、
      `CONFIRM_REQUIRED` / `INVALID_SOURCE` / `INVALID_NAME` / `HERMES_CLI_UNAVAILABLE`；
@@ -495,10 +612,15 @@ curl -s -X POST localhost:4319/api/agents/demo/env -H 'content-type: application
      路径穿越（id / 备份文件名）被拒；路由层 `PATCH /api/agents/:id/config` 未 confirm → 4xx。
   7. **M5 探测 / gateway / 降级链**——`detect` 用临时 home 断言 CLI 候选顺序与 `cliSource`、
    `hermesHomes` / `activeHome`；`parseBackendReadyLine` / `parseSessionToken`；
-   `GatewayClient` 用**本地 mock WS 服务器**验证 id 关联、事件通知回调、RPC 错误与超时；
+   `GatewayClient` 用**本地 mock WS 服务器**验证 id 关联、事件通知回调、RPC 错误与超时、
+   会话方法参数、服务端请求 `onRequest`/`respond`；
    `completePrompt` 注入假 CLI 验证 gateway→oneshot→stub 三级降级与 `via`、`-p` profile 透传。
+  8. **M5.2 会话 / 流式**——`chat.test.ts` 用本地 mock gateway 验证事件归一化序列（delta→done）、
+   未知事件透出 `raw`、审批默认 deny / `OS_GATEWAY_AUTO_APPROVE=1` 回 `once`、
+   abort 触发 `session.interrupt`；`hermes.test.ts` 用 `fastify.inject` 验证 SSE 事件流与错误帧；
+   `discover.test.ts` 验证 M5.0b 的 `activeHome` 影响 skill 扫描目录。
 - **验证命令统一为 `npm run check`**（等价于 `npm run typecheck && npm test`）。
-  当前共 **139** 个用例。
+  当前共 **200** 个用例。
 
 ```bash
 npm run check
@@ -507,13 +629,15 @@ npm run check
 ## 路线图（TODO）
 
 - ~~**M4**：功能性 Skill UI 宿主协议（iframe + postMessage RPC 桥）~~ ✅ 已完成。
+- ~~**M4.1**：声明式 Skill UI（`ui/panel.yaml`，零代码 `form`，与命令式并存；`uiHost` 判定 + `GET /api/skill-uis/:id/panel` + DeclarativePanel）~~ ✅ 已完成。
 - ~~**M2-core**：`hermes profile install / update / delete / export` 对接 + 小市场 + 两段式 dryRun 确认~~ ✅ 已完成。
 - ~~**M3**：Agent 配置编辑落盘（模型 / 描述 / MCP / 环境变量，含 confirm / 备份 / 原子写 / 回滚）~~ ✅ 已完成。
 - ~~**M5.0**：`detect.ts` 增强——非 PATH CLI 探测、`OS_HERMES_HOME`/多 home、状态暴露探测结果~~ ✅ 已完成。
+- ~~**M5.0b**：skillui 发现统一到 `detect` 解析的 `activeHome`~~ ✅ 已完成。
 - ~~**M5.1**：TUI gateway（`hermes serve` JSON-RPC/WS）+ `callModel` 三级降级链（gateway → `hermes -z` → stub）~~ ✅ 已完成（`llm.oneshot` 通道）。
+- ~~**M5.2**：会话（`session.create`/`prompt.submit`/`interrupt`/`close`）+ 流式事件 + SSE 路由 + 审批安全默认 + Skill UI `chatStream`~~ ✅ 已完成。
 - **M2（剩余）**：Electron 外壳；Skill 的安装/启停落盘；CLI 变更后的实时刷新优化。
-- **M5（剩余）**：会话管理、流式事件、审批/clarify、subagent、模型热切换（当前仅接入 `llm.oneshot` 无状态补全；
-  `session.create` + `prompt.submit` 契约已探明，可作为下一步）。
+- **M5（剩余）**：`session.resume`/`session.list` 等会话浏览、subagent、模型热切换；审批的交互式授权（当前自动 deny / `OS_GATEWAY_AUTO_APPROVE=1` 放行）。
 - **M2+**：Skill 安装/启停；MCP 网关（连接/调试 MCP server）；模型切换。
 - 代码内以 `TODO(M2+)` / `TODO(M5)` 注释标出了各扩展点。
 
@@ -526,6 +650,10 @@ npm run check
   会话/流式/审批等仍属 M5 剩余项。
 - M5.0 的 `detect.ts` 会探测 `~/.local/bin/hermes` 等非 PATH 位置；`resolveHermesCli` 在
   `OS_HERMES_CLI` 已设置但路径不存在时返回“不可用”，不再回退到自动探测（便于测试隔离）。
+- M4.1 的 `panel.yaml` 校验为**手写**（未引入 zod），与既有 `parseManifest` 风格一致、依赖最小；
+  非法 panel 视为“无声明式 UI”，`GET .../panel` 返回 404。
+- 声明式面板**不支持任意 JS**，因此 `ui/panel.yaml` 形态不会被 broker 的 capability/permission
+  授权（broker 只服务 iframe 形态的 manifest）；`wizard` 视图目前按 `form` 渲染。
 - `runTool` 目前仅白名单中的 `ppt.export`；`emitEvent` / `resize` 为 no-op（返回 ok）。
 - 权限提示在 prototype 中**自动放行**并记录日志，尚未接入交互式授权。
 - M2-core 生命周期依赖真实 `hermes` CLI；本机未安装 CLI 时，除 `dryRun` 预览外均返回

@@ -1,6 +1,11 @@
 import { readFile } from "node:fs/promises";
 import type { FastifyInstance } from "fastify";
-import type { ApiError, SkillHostInvokeRequest, SkillUiInfo } from "@shared/types";
+import type {
+  ApiError,
+  PanelSpec,
+  SkillHostInvokeRequest,
+  SkillUiInfo,
+} from "@shared/types";
 import { discoverSkillUis, findSkillUi } from "../skillui/discover";
 import { invokeSkill } from "../skillui/broker";
 import { contentTypeFor, resolveUiAsset, SKILL_UI_CSP } from "../skillui/static";
@@ -36,6 +41,22 @@ export async function skillUiRoutes(app: FastifyInstance): Promise<void> {
         return notFound(`未找到带 UI 的 skill：${request.params.id}`);
       }
       return info;
+    },
+  );
+
+  // GET /api/skill-uis/:id/panel —— 声明式面板规范（仅 uiHost=declarative）。
+  app.get<{ Params: { id: string } }>(
+    "/api/skill-uis/:id/panel",
+    async (request, reply): Promise<PanelSpec | ApiError> => {
+      const info = findSkillUi(request.params.id);
+      if (!info || info.uiHost !== "declarative" || !info.panel) {
+        reply.code(404);
+        return {
+          error: "PANEL_NOT_FOUND",
+          message: `未找到声明式面板：${request.params.id}`,
+        } satisfies ApiError;
+      }
+      return info.panel;
     },
   );
 

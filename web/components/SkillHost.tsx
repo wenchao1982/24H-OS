@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
+  ChatStreamEvent,
   SkillHostInvokeRequest,
   SkillHostInvokeResponse,
   SkillUiCapability,
+  SkillUiEventMessage,
   SkillUiHostInit,
   SkillUiInfo,
   SkillUiRpcResponse,
@@ -71,7 +73,9 @@ export default function SkillHost({
     [skill.id, reloadKey],
   );
 
-  const capabilities = skill.manifest.capabilities;
+  // 命令式宿主只处理 iframe manifest；声明式面板由 DeclarativePanel 渲染。
+  const manifest = skill.manifest;
+  const capabilities = manifest?.capabilities ?? [];
   const capabilitiesRef = useRef<SkillUiCapability[]>(capabilities);
   capabilitiesRef.current = capabilities;
 
@@ -87,9 +91,9 @@ export default function SkillHost({
     const win = iframeRef.current?.contentWindow;
     if (!win) return;
     const payload: SkillUiHostInit = {
-      protocol: skill.manifest.protocol,
-      capabilities: skill.manifest.capabilities,
-      permissions: skill.manifest.permissions,
+      protocol: manifest?.protocol ?? "",
+      capabilities: manifest?.capabilities ?? [],
+      permissions: manifest?.permissions ?? [],
       sessionNonce,
     };
     win.postMessage({ __24os: true, type: "host.init", payload }, "*");
@@ -98,7 +102,7 @@ export default function SkillHost({
       method: "host.init",
       detail: `握手 nonce=${sessionNonce.slice(0, 12)}… capabilities=[${capabilities.join(", ")}]`,
     });
-  }, [skill.manifest, sessionNonce, capabilities, pushLog]);
+  }, [manifest, sessionNonce, capabilities, pushLog]);
 
   /** 宿主 → iframe：回传 RPC 响应。 */
   const respond = useCallback((response: SkillUiRpcResponse) => {
@@ -152,6 +156,146 @@ export default function SkillHost({
     [skill.id, pushLog, respond],
   );
 
+  /** 宿主 → iframe：转发一条 chat 流式事件（M5.2）。 */
+  const forwardChatEvent = useCallback(
+    (event: ChatStreamEvent) => {
+      const name =
+        event.type === "delta" || event.type === "thinking" || event.type === "message"
+          ? "chat.delta"
+          : event.type === "done"
+            ? "chat.done"
+            : event.type === "error"
+              ? "chat.error"
+              : event.type === "tool.start" || event.type === "tool.complete"
+                ? "chat.tool"
+                : event.type === "approval" || event.type === "clarify"
+                  ? "chat.request"
+                  : "chat.event";
+      const message: SkillUiEventMessage = {
+        __24os: true,
+        type: "event",
+        event: name,
+        payload: event,
+      };
+      iframeRef.current?.contentWindow?.postMessage(message, "*");
+      const detail =
+        event.type === "delta" || event.type === "thinking" || event.type === "message"
+          ? (event.text ?? "")
+          : event.type === "done"
+            ? `status=${event.status ?? "complete"}`
+            : event.type === "error"
+              ? (event.message ?? "")
+              : summarize(event);
+      pushLog({
+        kind: event.type === "error" ? "error" : "event",
+        method: name,
+        detail,
+        ok: event.type !== "error",
+      });
+    },
+    [pushLog],
+  );
+
+  /**
+   * chatStream capability：宿主直接把 SSE 流经 postMessage 转发给 iframe，
+   * 完成后按请求 id 回一个汇总响应。
+   */
+  const invokeChatStream = useCallback(
+    async (params: unknown, id: string) => {
+      const obj = (params && typeof params === "object" ? params : {}) as {
+        prompt?: unknown;
+        profile?: unknown;
+      };
+      const prompt = typeof obj.prompt === "string" ? obj.prompt : "";
+      const profile = typeof obj.profile === "string" ? obj.profile : undefined;
+      const startedAt = performance.now();
+
+      if (prompt.trim() === "") {
+        pushLog({ kind: "error", method: "chatStream", detail: "prompt 不能为空", ok: false });
+        respond({
+          __24os: true,
+          id,
+          ok: false,
+          error: { code: "INVALID_VALUE", message: "prompt 不能为空" },
+        });
+        return;
+      }
+
+      try {
+        const response = await fetch(`${API_BASE}/api/hermes/chat/stream`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ prompt, profile }),
+        });
+        if (!response.ok || !response.body) {
+          const message = `HTTP ${response.status}`;
+          pushLog({
+            kind: "error",
+            method: "chatStream",
+            detail: message,
+            ms: Math.round(performance.now() - startedAt),
+            ok: false,
+          });
+          respond({
+            __24os: true,
+            id,
+            ok: false,
+            error: { code: "CHAT_STREAM_FAILED", message },
+          });
+          return;
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let status = "done";
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          let index = buffer.indexOf("\n\n");
+          while (index >= 0) {
+            const chunk = buffer.slice(0, index).trim();
+            buffer = buffer.slice(index + 2);
+            if (chunk.startsWith("data:")) {
+              let event: ChatStreamEvent | null = null;
+              try {
+                event = JSON.parse(chunk.slice("data:".length).trim()) as ChatStreamEvent;
+              } catch {
+                event = null;
+              }
+              if (event) {
+                forwardChatEvent(event);
+                if (event.type === "error") status = "error";
+              }
+            }
+            index = buffer.indexOf("\n\n");
+          }
+        }
+
+        pushLog({
+          kind: "rpc",
+          method: "chatStream",
+          detail: `prompt=${summarize(prompt)}`,
+          ms: Math.round(performance.now() - startedAt),
+          ok: status !== "error",
+        });
+        respond({ __24os: true, id, ok: true, result: { status } });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        pushLog({
+          kind: "error",
+          method: "chatStream",
+          detail: `网络错误：${message}`,
+          ms: Math.round(performance.now() - startedAt),
+          ok: false,
+        });
+        respond({ __24os: true, id, ok: false, error: { code: "NETWORK_ERROR", message } });
+      }
+    },
+    [forwardChatEvent, pushLog, respond],
+  );
+
   // 监听 iframe 的 RPC 请求。
   useEffect(() => {
     function onMessage(event: MessageEvent) {
@@ -198,12 +342,18 @@ export default function SkillHost({
         });
       }
 
+      // chatStream：走 SSE 流式转发，而非一次性 REST invoke。
+      if (method === "chatStream") {
+        void invokeChatStream(data.params, data.id);
+        return;
+      }
+
       void invoke(method, data.params, data.id);
     }
 
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
-  }, [invoke, respond, sendInit, pushLog]);
+  }, [invoke, invokeChatStream, respond, sendInit, pushLog]);
 
   const reload = () => {
     setLogs([]);
@@ -211,7 +361,7 @@ export default function SkillHost({
     setReloadKey((key) => key + 1);
   };
 
-  const size = skill.manifest.size ?? { width: 980, height: 660 };
+  const size = manifest?.size ?? { width: 980, height: 660 };
 
   return (
     <div className="skill-host">
@@ -240,7 +390,7 @@ export default function SkillHost({
           className="skill-frame"
           title={`skill-ui-${skill.id}`}
           sandbox="allow-scripts"
-          src={`${API_BASE}/skill-ui/${encodeURIComponent(skill.id)}/${skill.manifest.entry}`}
+          src={`${API_BASE}/skill-ui/${encodeURIComponent(skill.id)}/${manifest?.entry ?? "index.html"}`}
           style={{ width: size.width, height: size.height }}
           onLoad={sendInit}
         />

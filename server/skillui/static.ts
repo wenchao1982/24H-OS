@@ -19,6 +19,10 @@ export const ALLOWED_UI_EXTENSIONS: readonly string[] = [
   ".png",
   ".svg",
   ".woff2",
+  // M4.1：声明式面板需要托管 panel.yaml 与模板清单/预览。
+  ".yaml",
+  ".yml",
+  ".md",
 ];
 
 /** 严格 CSP：一切网络与能力调用都只能通过 RPC，UI 自身不允许联网。 */
@@ -43,6 +47,11 @@ export function contentTypeFor(ext: string): string {
       return "image/svg+xml";
     case ".woff2":
       return "font/woff2";
+    case ".yaml":
+    case ".yml":
+      return "text/yaml; charset=utf-8";
+    case ".md":
+      return "text/markdown; charset=utf-8";
     default:
       return "application/octet-stream";
   }

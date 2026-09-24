@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { Agent, HermesStatus, MarketEntry, SkillUiInfo } from "@shared/types";
 import { fetchAgents, fetchMarket, fetchSkillUis } from "./api";
+import DeclarativePanel from "./components/DeclarativePanel";
 import InstallAgentDialog from "./components/InstallAgentDialog";
 import SkillHost from "./components/SkillHost";
 import AgentDetail from "./pages/AgentDetail";
@@ -160,7 +161,9 @@ export default function App() {
                     <span className="market-id">{ui.id}</span>
                   </div>
                   <p className="market-desc">
-                    {ui.manifest.capabilities.join(" · ")}
+                    {ui.uiHost === "declarative"
+                      ? `声明式面板 · ${ui.panel?.fields.length ?? 0} 个字段`
+                      : (ui.manifest?.capabilities.join(" · ") ?? "")}
                   </p>
                   <button
                     type="button"
@@ -232,7 +235,11 @@ export default function App() {
 
       {activeUi && (
         <div className="skill-host-panel">
-          <SkillHost skill={activeUi} onClose={() => setActiveUi(null)} />
+          {activeUi.uiHost === "declarative" ? (
+            <DeclarativePanel skill={activeUi} onClose={() => setActiveUi(null)} />
+          ) : (
+            <SkillHost skill={activeUi} onClose={() => setActiveUi(null)} />
+          )}
         </div>
       )}
 

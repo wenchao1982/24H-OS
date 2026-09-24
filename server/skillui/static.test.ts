@@ -17,6 +17,10 @@ function makeUiRoot(): { uiRoot: string; outsideFile: string } {
   writeFileSync(path.join(uiRoot, "styles.css"), "body{}", "utf8");
   writeFileSync(path.join(uiRoot, "notes.txt"), "secret", "utf8");
   writeFileSync(path.join(uiRoot, "pic.svg"), "<svg/>", "utf8");
+  writeFileSync(path.join(uiRoot, "panel.yaml"), "protocol: 24os-skill-panel/1", "utf8");
+  writeFileSync(path.join(uiRoot, "README.md"), "# ui", "utf8");
+  mkdirSync(path.join(uiRoot, "templates"), { recursive: true });
+  writeFileSync(path.join(uiRoot, "templates", "index.json"), "[]", "utf8");
   mkdirSync(path.join(uiRoot, "sub"), { recursive: true });
   writeFileSync(path.join(uiRoot, "sub", "index.html"), "<!doctype html>", "utf8");
   const outsideFile = path.join(base, "secret.env");
@@ -59,6 +63,21 @@ describe("resolveUiAsset —— 防目录穿越与扩展名白名单", () => {
     expect(resolveUiAsset(uiRoot, "nope.html")).toBeNull();
     expect(resolveUiAsset(uiRoot, "a\0b.html")).toBeNull();
   });
+
+  it("M4.1：放行 yaml/yml/md 与 templates/ 子目录", () => {
+    const { uiRoot } = makeUiRoot();
+    expect(resolveUiAsset(uiRoot, "panel.yaml")?.ext).toBe(".yaml");
+    expect(resolveUiAsset(uiRoot, "README.md")?.ext).toBe(".md");
+    expect(resolveUiAsset(uiRoot, "templates/index.json")?.absolute).toBe(
+      path.join(uiRoot, "templates", "index.json"),
+    );
+  });
+
+  it("M4.1：新增扩展名不放松穿越防护", () => {
+    const { uiRoot } = makeUiRoot();
+    expect(resolveUiAsset(uiRoot, "../panel.yaml")).toBeNull();
+    expect(resolveUiAsset(uiRoot, "templates/../../panel.yaml")).toBeNull();
+  });
 });
 
 describe("响应头与 MIME", () => {
@@ -72,5 +91,8 @@ describe("响应头与 MIME", () => {
     expect(contentTypeFor(".html")).toContain("text/html");
     expect(contentTypeFor(".js")).toContain("text/javascript");
     expect(contentTypeFor(".woff2")).toBe("font/woff2");
+    expect(contentTypeFor(".yaml")).toContain("text/yaml");
+    expect(contentTypeFor(".yml")).toContain("text/yaml");
+    expect(contentTypeFor(".md")).toContain("text/markdown");
   });
 });

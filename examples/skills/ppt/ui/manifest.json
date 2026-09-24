@@ -4,11 +4,12 @@
   "title": "PPT 工作台",
   "entry": "index.html",
   "host": "iframe",
-  "capabilities": ["callModel", "readFile", "writeFile", "runTool", "emitEvent", "resize"],
+  "capabilities": ["callModel", "chatStream", "readFile", "writeFile", "runTool", "emitEvent", "resize"],
   "permissions": [
     "fs:read:workspace",
     "fs:write:workspace",
     "model:call",
+    "model:chat",
     "tool:ppt.export"
   ],
   "size": { "width": 980, "height": 660 }

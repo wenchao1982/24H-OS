@@ -1,0 +1,12 @@
+[
+  {
+    "id": "chronological",
+    "name": "时间线",
+    "description": "按时间 / 阶段依次展开"
+  },
+  {
+    "id": "problem-solution",
+    "name": "问题-方案",
+    "description": "先列痛点，再给方案"
+  }
+]

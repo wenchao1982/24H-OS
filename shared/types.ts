@@ -30,9 +30,9 @@ export interface Skill {
   description?: string;
   path?: string;
   enabled?: boolean;
-  /** 该 skill 是否自带可托管的 UI（存在 ui/manifest.json）。 */
+  /** 该 skill 是否自带可托管的 UI（存在 ui/manifest.json 或 ui/panel.yaml）。 */
   hasUi?: boolean;
-  /** 若有 UI，其协议 id（来自 ui/manifest.json 的 id 字段）。 */
+  /** 若有 UI，其协议 id（manifest.id 或 panel.skill）。 */
   uiId?: string;
 }
 
@@ -66,6 +66,7 @@ export interface SkillUiManifest {
 /** 可注入的 RPC 方法名（同时也是 capability 名）。 */
 export type SkillUiCapability =
   | "callModel"
+  | "chatStream"
   | "readFile"
   | "writeFile"
   | "runTool"
@@ -75,6 +76,7 @@ export type SkillUiCapability =
 /** 所有合法的 capability（用于运行时校验 manifest）。 */
 export const SKILL_UI_CAPABILITIES: readonly SkillUiCapability[] = [
   "callModel",
+  "chatStream",
   "readFile",
   "writeFile",
   "runTool",
@@ -82,18 +84,113 @@ export const SKILL_UI_CAPABILITIES: readonly SkillUiCapability[] = [
   "resize",
 ];
 
+/* ------------------------------------------------------------------ *
+ * M4.1 · 声明式 Skill UI（24os-skill-panel/1）
+ * ------------------------------------------------------------------ */
+
+/** 声明式面板协议标识。 */
+export const PANEL_PROTOCOL = "24os-skill-panel/1";
+
+/** 面板视图：form（先实现）；wizard 暂按 form 降级渲染。 */
+export type PanelView = "form" | "wizard";
+
+/** 支持的表单字段类型。 */
+export type PanelFieldType = "text" | "textarea" | "select" | "slider" | "file";
+
+/** 所有合法的字段类型（用于运行时校验 panel.yaml）。 */
+export const PANEL_FIELD_TYPES: readonly PanelFieldType[] = [
+  "text",
+  "textarea",
+  "select",
+  "slider",
+  "file",
+];
+
+/** select 的一个选项（options 可为字符串数组或对象数组）。 */
+export interface PanelOption {
+  value: string;
+  label?: string;
+}
+
+/** 一个表单字段声明。 */
+export interface PanelField {
+  key: string;
+  label: string;
+  type: PanelFieldType;
+  required?: boolean;
+  placeholder?: string;
+  /** 默认值（slider 为数字，其余为字符串）。 */
+  default?: string | number;
+  /** slider：最小值 / 最大值 / 步长。 */
+  min?: number;
+  max?: number;
+  step?: number;
+  /** select：静态选项。 */
+  options?: PanelOption[];
+  /** select：动态枚举（相对 ui/ 目录的 JSON 路径，如 templates/index.json）。 */
+  options_from?: string;
+}
+
+/** 模板目录声明（可选）。 */
+export interface PanelTemplates {
+  /** 模板目录（相对 ui/）。 */
+  dir?: string;
+  /** 模板清单 JSON（相对 ui/）。 */
+  index?: string;
+}
+
+/** 预览区类型：iframe | markdown | none。 */
+export type PanelPreviewKind = "iframe" | "markdown" | "none";
+
+/** 预览区声明。 */
+export interface PanelPreview {
+  kind: PanelPreviewKind;
+  /** 预览源（相对 ui/ 的路径；iframe / markdown 必填）。 */
+  source?: string;
+}
+
+/** 一个动作按钮：kind 目前仅 "prompt"（把插值后的 prompt 发给 chat/stream）。 */
+export interface PanelAction {
+  id: string;
+  label: string;
+  kind: "prompt";
+  /** 含 {{field_key}} 占位符的提示词模板。 */
+  prompt: string;
+}
+
+/** `ui/panel.yaml` 解析后的声明式面板规范。 */
+export interface PanelSpec {
+  protocol: string;
+  /** UI 唯一 id（也用作 /skill-ui/:id 与 /api/skill-uis/:id）。 */
+  skill: string;
+  title: string;
+  view: PanelView;
+  description?: string;
+  fields: PanelField[];
+  templates?: PanelTemplates;
+  preview?: PanelPreview;
+  actions: PanelAction[];
+}
+
+/** Skill UI 的宿主形式：命令式 iframe 或声明式面板。 */
+export type SkillUiHostKind = "iframe" | "declarative";
+
 /** GET /api/skill-uis 的单项：已发现的、自带 UI 的 skill。 */
 export interface SkillUiInfo {
-  /** manifest.id。 */
+  /** manifest.id（iframe）或 panel.skill（declarative）。 */
   id: string;
-  /** manifest.title。 */
+  /** manifest.title 或 panel.title。 */
   title: string;
   /** skill 根目录（含 SKILL.md 的那层）。 */
   skillPath: string;
   /** ui/ 目录的绝对路径（静态托管的根）。 */
   uiRoot: string;
-  /** 解析后的 manifest。 */
-  manifest: SkillUiManifest;
+  /** 宿主形式：`iframe`（ui/manifest.json）或 `declarative`（ui/panel.yaml）。 */
+  uiHost: SkillUiHostKind;
+  /** 命令式（iframe）UI 的解析后 manifest；声明式时为 undefined。 */
+  manifest?: SkillUiManifest;
+  /** 声明式 UI 的解析后面板；命令式时为 undefined。 */
+  panel?: PanelSpec;
   /** 恒为 true，便于前端统一过滤（类型上与 Agent.skills[].hasUi 呼应）。 */
   hasUi: boolean;
 }
@@ -137,6 +234,17 @@ export interface SkillUiHostInitMessage {
 export interface SkillUiReadyMessage {
   __24os: true;
   type: "ui.ready";
+}
+
+/**
+ * 宿主 → iframe：流式事件（M5.2，用于 `chatStream`）。
+ * `event` 取值：`chat.delta` | `chat.done` | `chat.error` | `chat.tool` | `chat.request` | `chat.event`。
+ */
+export interface SkillUiEventMessage {
+  __24os: true;
+  type: "event";
+  event: string;
+  payload: unknown;
 }
 
 /** RPC / broker 统一错误结构。 */
@@ -258,6 +366,67 @@ export interface GatewayStatus {
 export interface AgentsResponse {
   agents: Agent[];
   status: HermesStatus;
+}
+
+/* ------------------------------------------------------------------ *
+ * M5.2 · Gateway 会话与流式（chat stream）
+ * ------------------------------------------------------------------ */
+
+/** 归一化后的 chat 流式事件类型。 */
+export type ChatStreamEventType =
+  | "session"
+  | "delta"
+  | "message"
+  | "thinking"
+  | "tool.start"
+  | "tool.complete"
+  | "approval"
+  | "clarify"
+  | "done"
+  | "error"
+  | "raw";
+
+/**
+ * gateway chat 流的归一化事件，也是 SSE 的 `data:` 负载。
+ * 未知的 gateway 事件/服务端请求以 `{ type: "raw", raw }` 原样透出。
+ */
+export interface ChatStreamEvent {
+  type: ChatStreamEventType;
+  /** 所属会话 id（gateway 提供时）。 */
+  sessionId?: string;
+  /** delta / thinking / message / done：文本增量或最终文本。 */
+  text?: string;
+  /** message.interim：工具调用旁的旁白标记。 */
+  interim?: boolean;
+  /** tool.start / tool.complete。 */
+  toolId?: string;
+  name?: string;
+  args?: unknown;
+  summary?: string;
+  result?: unknown;
+  /** error：错误信息与可选错误码。 */
+  message?: string;
+  reason?: string;
+  /** session：原始 gateway 事件名与 payload。 */
+  event?: string;
+  payload?: unknown;
+  /** approval / clarify：服务端请求 id 与展示信息。 */
+  requestId?: string;
+  command?: string;
+  description?: string;
+  choices?: string[];
+  question?: string;
+  /** done：turn 状态（complete / error / interrupted）与 usage。 */
+  status?: string;
+  usage?: unknown;
+  /** raw：原始帧。 */
+  raw?: unknown;
+}
+
+/** POST /api/hermes/chat/stream 请求体（SSE）。 */
+export interface ChatStreamRequest {
+  profile?: string;
+  prompt: string;
 }
 
 /* ------------------------------------------------------------------ *

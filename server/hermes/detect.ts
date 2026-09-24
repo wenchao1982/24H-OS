@@ -271,6 +271,20 @@ function hasExplicitHome(options: DetectOptions): boolean {
   return Boolean(env.OS_HERMES_HOME?.trim() || env.HERMES_HOME?.trim());
 }
 
+/**
+ * 同步版 activeHome 解析（M5.0b）。
+ *
+ * 与 detectHermes 的 activeHome 逻辑保持一致：
+ *   显式 env home → CLI 包装脚本声明的 home → 默认候选探测。
+ * 供同步调用方（如 skillui 发现）复用，避免与 agent 使用不同的 home。
+ */
+export function resolveActiveHomeSync(options: DetectOptions = {}): string {
+  if (hasExplicitHome(options)) return resolveConfiguredHome(options);
+  const cliHome = resolveHomeForCli(undefined, options);
+  if (cliHome) return cliHome;
+  return resolveActiveHome(options);
+}
+
 /** 读取 <cliPath> --version，失败返回 null。 */
 async function readVersion(cliPath: string): Promise<string | null> {
   try {
