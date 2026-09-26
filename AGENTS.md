@@ -19,11 +19,13 @@ web-first（无显示器环境亦可开发；Electron 为桌面分发外壳，`e
 - `server/` — Fastify 内核桥接层，端口 **4319**，封装 `hermes` CLI 与 `~/.hermes`
 - `web/` — React 18 + TypeScript + Vite，dev 端口 **5173**（自动代理 `/api` → 4319）
 - `shared/` — 前后端共享 TS 类型 + `panel.ts`（插值工具，alias `@shared/*`）
-- `docs/` — `SKILL_UI_PROTOCOL.md`（命令式 + 声明式）、`CONFIG_EDITING.md`、`APP_MANIFEST.md`（M6 + M7 hooks/WS）、`CRON.md`（M8 官方 Cron 薄封装 + bots.yaml 迁移）、`CHANNELS.md`（M10 通道对齐 / 投递推荐 / Group Chat 决策）、`PROFILE_ALIGN.md`（M9 Bot=Profile / SOUL / disabled_skills / 头像 / meta.json 降级）
+- `docs/` — `SKILL_UI_PROTOCOL.md`（命令式 + 声明式）、`CONFIG_EDITING.md`、`APP_MANIFEST.md`（M6 + M7 hooks/WS）、`CRON.md`（M8 官方 Cron 薄封装 + bots.yaml 迁移）、`CHANNELS.md`（M10 通道对齐 / 投递推荐 / Group Chat 决策）、`PROFILE_ALIGN.md`（M9 Bot=Profile / SOUL / disabled_skills / 头像 / meta.json 降级）、`ACCEPTANCE_CHECKLIST.md`（真机验收清单 §0–§12，含可复制命令/期望值/失败收集）
 - `examples/skills/` — 示例功能性 skill（`ppt` 命令式、`outline` 声明式）
 - `market/index.json` — 静态市场清单
 - `market/apps/*.app.yaml` — M6 内置 AppManifest（`24os-appmanifest/1`）
 - `scripts/build-server.mjs` — esbuild 打包 server → `dist/server.cjs`（单文件 CJS，全量内联）
+- `scripts/acceptance-smoke.mjs` — 真机验收**只读**冒烟（纯 Node、零依赖，对运行中 server 仅发 GET：health/agents/agent 详情/agent config/skill-uis/market/cron/subagents/hooks/`/`/panel.yaml；逐项 PASS/FAIL + 汇总 + 退出码；聚合断言响应不含 `api_key`/`token`/`secret` 明文。`--base` / `OS_E2E_BASE` 覆盖地址）
+- `docs/ACCEPTANCE_CHECKLIST.md` — 真机验收清单（详见该文档；每项含前置/步骤/期望/失败收集）
 - `playwright.config.ts` + `e2e/` — Playwright headless e2e（真实 Chromium 跑关键链路；`webServer` 经 `e2e/start-server.ts` 自建**临时** HOME/HERMES_HOME + 假 CLI；`e2e/sse-mock.ts` 在浏览器层 mock SSE）
 - `electron/` + `package.json#build` — Electron 壳 + electron-builder（`npm run dist` → `release/`；`asarUnpack: ["dist/server.cjs","dist/web/**","market/**","examples/skills/**"]` → `app.asar.unpacked/`，供系统 node 直接执行；`files` 同步包含 `market/**`/`examples/skills/**`，否则打包后 `/api/market` 为空、示例 skill 不被发现）
 
@@ -129,6 +131,7 @@ npm run e2e:server     # e2e 专用 server（临时 HOME/HERMES_HOME + 假 CLI�
 - `server/routes/hermes.ts` — 状态/gateway 启停 + SSE `/api/hermes/chat/stream`（body：`chatId`/`model`/`force`，`interactive:true`）+ `POST /api/hermes/chat/decide` + subagent 观测/控制（M10：`GET /api/hermes/subagents` + `GET /:id/tail` + `POST /:id/interrupt`(confirm) + `POST /:id/steer` + `POST /pause`(confirm)；旧 `POST /api/hermes/subagent` → 501 `SPAWN_UNSUPPORTED`）
 - `server/paths.ts` — `APP_ROOT` 统一解析（源码 `server/` 与打包 `dist/server.cjs` 同语义，勿各自推算层级）
 - `scripts/build-server.mjs` — esbuild 打包 server → `dist/server.cjs`（`platform:node`/`format:cjs`/`bundle`；全量内联，失败回退 `packages:"external"`）
+- `scripts/acceptance-smoke.mjs` — 真机验收**只读**冒烟（仅 GET、零写入、零模型调用；`PASS/FAIL/SKIP` + 汇总 + 退出码；`--base`/`OS_E2E_BASE`；聚合断言无明文密钥）— 与 `docs/ACCEPTANCE_CHECKLIST.md`（§0–§12）配套，README「验收」章节入口
 - `server/staticWeb.ts` — M2 外壳：`dist/web` 生产静态托管 + SPA fallback + 防穿越 + 回环 token 豁免（`shouldBypassWebToken`）
 - `electron/main.cjs` / `electron/preload.cjs` — Electron 主进程（复用/拉起 server；**有 `dist/server.cjs` 时优先用系统 node spawn 该产物，否则回退 tsx**；打包态经 `asarUnpack` 解包，用 `app.getAppPath()` 判定并映射 `app.asar` → `app.asar.unpacked` 解析入口/`cwd`/`OS_WEB_DIST`；`market/**`/`examples/skills/**` 亦解包至同一根，由 `APP_ROOT` 命中、**无需额外 env**；headless 退出 0、安全默认）+ 最小 preload（仅 `{ platform }`）
 - `web/components/SkillHost.tsx` — 命令式 Skill UI 宿主 + RPC broker + 调试面板 + 审批/澄清卡片 + 模型下拉 + 昂贵模型确认 Modal（force 重试）

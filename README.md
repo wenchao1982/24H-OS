@@ -63,7 +63,8 @@
 ├─ e2e/                   # 真实 Chromium e2e（真实后端冒烟 + 浏览器层 mock SSE + 禁用 skill + 状态抽屉）
 ├─ .github/workflows/ci.yml # CI：check（node 20/22）+ e2e（chromium）+ dist（tag/dispatch）
 ├─ scripts/
-│  └─ build-server.mjs    # esbuild 打包 server → dist/server.cjs（单文件 CJS，全量内联）
+│  ├─ build-server.mjs    # esbuild 打包 server → dist/server.cjs（单文件 CJS，全量内联）
+│  └─ acceptance-smoke.mjs # 真机验收只读冒烟（仅 GET，零写入/零模型调用）
 ├─ electron/
 │  ├─ main.cjs            # Electron 主进程（复用/拉起 server；优先 dist/server.cjs）
 │  └─ preload.cjs         # 最小 preload（仅 { platform }，无 Node/IPC）
@@ -75,7 +76,8 @@
 │  ├─ APP_MANIFEST.md      # M6 AppManifest + M7 hooks/outbound/WS
 │  ├─ CRON.md              # M8 官方 Cron 薄封装 + 触发机制实证 + bots.yaml 迁移
 │  ├─ CHANNELS.md          # M10 通道（channels）对齐 + 投递推荐 + Group Chat 决策
-│  └─ PROFILE_ALIGN.md     # M9 Bot=Profile 对齐官方（SOUL / disabled_skills / 头像 / meta.json 降级）
+│  ├─ PROFILE_ALIGN.md     # M9 Bot=Profile 对齐官方（SOUL / disabled_skills / 头像 / meta.json 降级）
+│  └─ ACCEPTANCE_CHECKLIST.md # 真机验收清单（§0–§12，可逐项打勾）
 ├─ market/
 │  ├─ index.json           # M2-core 小市场静态清单（可安装 distribution）
 │  └─ apps/                # M6 内置 AppManifest（*.app.yaml）
@@ -201,6 +203,7 @@ npm run electron     # 启动 Electron 壳（main = electron/main.cjs）
 npm run dev:desktop  # 先 build:web，再并发 dev:server + electron
 npm run dist         # build + electron-builder --linux（产物 release/*.AppImage / *.deb）
 npm run test:e2e     # Playwright headless e2e（先 build:web:e2e 再 chromium 跑 e2e/，需浏览器）
+node scripts/acceptance-smoke.mjs   # 真机验收只读冒烟（对运行中的 server 仅发 GET）
 ```
 
 ### Electron 桌面壳（M2 外壳）
@@ -953,6 +956,28 @@ npx playwright test --ui # 有显示器时可交互调试
 - **`dist`**：仅 `workflow_dispatch` 或 `refs/tags/v*`（push tag）触发，`npm ci`（**不**跳过
   electron 下载）→ `npm run dist`，上传 `release/*.AppImage`、`*.deb` 为 artifact。
 - `concurrency` 取消同分支旧运行，`permissions: contents: read` 最小权限。
+
+## 验收
+
+面向**有显示器、有真实 Hermes 环境**的逐项打勾清单（前置 / 可复制命令 / 期望值 / 失败时收集什么）：
+
+- 📋 [`docs/ACCEPTANCE_CHECKLIST.md`](docs/ACCEPTANCE_CHECKLIST.md) —— §0 备份与基线 → §12 反馈模板；
+  覆盖 Agent=Profile（SOUL/头像/skill 启停）、市场 AppManifest、Skill UI 双形态、真实模型与审批、
+  官方 Cron（含 `HERMES_DESKTOP=1` ticker 触发验证）、Subagent 观测、Electron 真机、写入四重保证。
+
+**只读冒烟脚本**（对运行中的 server 仅发 GET，零写入、零模型调用，可安全反复运行）：
+
+```bash
+npm run dev                                   # 或 npm run build && npm start
+node scripts/acceptance-smoke.mjs             # 默认 http://127.0.0.1:4319
+node scripts/acceptance-smoke.mjs --base http://127.0.0.1:4598
+OS_E2E_BASE=http://127.0.0.1:4598 node scripts/acceptance-smoke.mjs
+```
+
+逐项打印 `PASS/FAIL/SKIP` + HTTP 状态 + 摘要，并聚合断言响应中**不出现 `api_key`/`token`/`secret` 明文**；
+全 PASS 退出码 `0`，否则 `1`（server 不可达时提示「请先启动 server」）。
+> 无真实 Hermes CLI / gateway 的隔离环境里 `GET /api/cron/jobs` 会返回 503 `GATEWAY_UNAVAILABLE`
+> （脚本据此判 FAIL —— 这是刻意**不弱化断言**，正常真机环境 gateway 由首次访问惰性拉起）。
 
 ## 路线图（TODO）
 
