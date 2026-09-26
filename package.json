@@ -11,10 +11,13 @@
     "dev:web": "vite",
     "dev:desktop": "npm run build:web && concurrently -n server,electron -c blue,green \"npm:dev:server\" \"electron .\"",
     "electron": "electron .",
-    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.node.json --noEmit",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.e2e.json --noEmit",
     "test": "vitest run",
     "check": "npm run typecheck && npm test",
     "build:web": "vite build",
+    "build:web:e2e": "VITE_API_BASE_URL=http://127.0.0.1:4599 vite build",
+    "e2e:server": "tsx e2e/start-server.ts",
+    "test:e2e": "npm run build:web:e2e && playwright test",
     "build:server": "node scripts/build-server.mjs",
     "build": "npm run build:web && npm run build:server && npm run typecheck",
     "dist": "npm run build && electron-builder --linux",
@@ -68,6 +71,7 @@
     "yaml": "^2.9.1"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@testing-library/dom": "^10.4.2",
     "@testing-library/jest-dom": "^7.0.1",
     "@testing-library/react": "^16.3.3",

@@ -24,6 +24,7 @@ web-first（无显示器环境亦可开发；Electron 为桌面分发外壳，`e
 - `market/index.json` — 静态市场清单
 - `market/apps/*.app.yaml` — M6 内置 AppManifest（`24os-appmanifest/1`）
 - `scripts/build-server.mjs` — esbuild 打包 server → `dist/server.cjs`（单文件 CJS，全量内联）
+- `playwright.config.ts` + `e2e/` — Playwright headless e2e（真实 Chromium 跑关键链路；`webServer` 经 `e2e/start-server.ts` 自建**临时** HOME/HERMES_HOME + 假 CLI；`e2e/sse-mock.ts` 在浏览器层 mock SSE）
 - `electron/` + `package.json#build` — Electron 壳 + electron-builder（`npm run dist` → `release/`；`asarUnpack: ["dist/server.cjs","dist/web/**","market/**","examples/skills/**"]` → `app.asar.unpacked/`，供系统 node 直接执行；`files` 同步包含 `market/**`/`examples/skills/**`，否则打包后 `/api/market` 为空、示例 skill 不被发现）
 
 ## 3. 常用命令
@@ -41,18 +42,30 @@ npm run typecheck      # 两套 tsconfig 的 tsc --noEmit
 npm run build          # build:web + build:server + typecheck（dist/web + dist/server.cjs）
 npm run build:server   # esbuild 打包 server → dist/server.cjs（单文件 CJS，全量内联）
 npm run dist           # build + electron-builder --linux（产物 release/*.AppImage / *.deb）
+npm run test:e2e       # ★ Playwright headless e2e（先 build:web:e2e 再 chromium 跑 e2e/，需浏览器；不并入 check）
+npm run e2e:server     # e2e 专用 server（临时 HOME/HERMES_HOME + 假 CLI；一般由 Playwright webServer 自动拉起）
 ```
 
 ## 4. 硬性约定（务必遵守）
 
-- **验证命令固定为 `npm run check`**；提交前必须通过（当前 **509 个用例**：server 391 node +
+- **验证命令固定为 `npm run check`**；提交前必须通过（当前 **533 个用例**：server 415 node +
   web 110 jsdom + shared 8）。`npm run check` = `typecheck` + `vitest run`，**一次同时跑两套环境**。
+  `typecheck` 第三套 `tsconfig.e2e.json` 覆盖 `e2e/**` + `playwright.config.ts`（DOM lib）。
 - **web 测试约定**：`web/**/*.test.tsx` 顶部写 `/** @vitest-environment jsdom */`，并
   `import "@testing-library/jest-dom/vitest"` + `afterEach(cleanup)`（vitest 未开 globals，
   RTL 不会自动清理）；`server/**` 保持 node 环境。网络/模型/WS 全部 mock，**不连真实后端、
   不触碰 `~/.hermes`**。fixture 与假 Response 放 `web/test-utils.ts`。
+- **e2e 约定（Playwright）**：`e2e/**/*.spec.ts` **不并入 `npm run check`**（慢 + 需浏览器），
+  只跑 `npm run test:e2e`。硬性隔离：临时 `HOME`/`HERMES_HOME` + `OS_HERMES_CLI` 指假脚本 +
+  临时备份/元数据/工作区，**绝不触碰真实 `~/.hermes` / `~/hermes-desktop` / `~/.24os`**；
+  端口固定 `127.0.0.1:4599`（`VITE_API_BASE_URL` 构建注入，与静态托管同源）；
+  `/api/hermes/chat/stream` 在**浏览器层** mock（`e2e/sse-mock.ts` 覆写 `window.fetch` 为可控
+  `ReadableStream`——`page.route` 只能整包返回、无法在审批处续流），`chat/decide` 用 `page.route`
+  捕获断言，**绝不调真实模型**；其余 `/api/*` 打真实后端冒烟。用例间独立、断言具体（文本/角色/请求体）。
+  `.gitignore` 忽略 `e2e/.artifacts/`、`playwright-report/`、`test-results/`。
 - **CI**：`.github/workflows/ci.yml` —— `check`（push main / PR / dispatch，node 20+22：
-  `npm ci` → `check` → `build`）与 `dist`（仅 dispatch 或 `v*` tag：`npm run dist`）。
+  `npm ci` → `check` → `build`）、`e2e`（node 22：`npm ci` → `npx playwright install --with-deps chromium`
+  → `npm run test:e2e`，失败上传 `e2e/.artifacts` + `playwright-report`）与 `dist`（仅 dispatch / `v*` tag：`npm run dist`）。
 - **配置写入官方命令优先**（v3.0 §4.2）：模型 / MCP / env 先试 `hermes [-p <id>] config set|unset ...`
   （`shell:false`；`default` 不加 `-p`），成功返回 `via:"cli"`；CLI 不可用 / 失败才回退文件写
   （`via:"file"`）。避免与 Hermes 进程并发写 config.yaml。MCP 用 `config set/unset mcp_servers.<name>`
@@ -124,7 +137,8 @@ npm run dist           # build + electron-builder --linux（产物 release/*.App
 - `shared/types.ts` / `shared/panel.ts` — 共享类型与 `{{key}}` 插值工具（改 API 先改这里）
 - `web/test-utils.ts` — 前端单测 fixture + 假 JSON/SSE Response（不连网络）
 - `web/**/*.test.{ts,tsx}` — jsdom 前端单测（api / 组件 / 页面 / App）；`shared/panel.test.ts` 补插值边界
-- `.github/workflows/ci.yml` — CI：`check`（node 20/22，`npm ci`+`check`+`build`）+ `dist`（dispatch / `v*` tag）
+- `playwright.config.ts` / `e2e/` — headless e2e：`env.ts`（隔离路径常量）/ `start-server.ts`（webServer 包装：临时 home + 假 CLI + 预置禁用 skill）/ `sse-mock.ts`（浏览器层 SSE mock）/ `helpers.ts` + `*.spec.ts`（A 真实后端冒烟 / B mock SSE / B6 禁用 skill / C7 状态抽屉）
+- `.github/workflows/ci.yml` — CI：`check`（node 20/22，`npm ci`+`check`+`build`）+ `e2e`（node 22，chromium）+ `dist`（dispatch / `v*` tag；失败上传 e2e 截图/trace）
 
 ## 7. 环境变量
 
@@ -152,7 +166,7 @@ npm run dist           # build + electron-builder --linux（产物 release/*.App
 
 ## 8. 当前状态与路线图
 
-已完成：**M1**（只读骨架）、**M1.1**（加固）、**M4**（Skill UI 宿主 + PPT demo）、**M4.1**（声明式 `ui/panel.yaml` 面板 + `outline` demo，零代码 / 无任意 JS，与命令式并存）、**M2-core**（生命周期 + 市场）、**M3**（配置编辑落盘）、**M5.0**（CLI/多 home 探测）、**M5.1**（TUI gateway + `callModel` 降级链，走 `llm.oneshot`）、**M5.x**（配置写入官方命令优先 + `via`；`resolveCliHome` 统一 home）、**M5.0b**（skillui 发现统一到 `activeHome`）、**M5.2**（`session.create`/`prompt.submit`/`session.interrupt`/`session.close` + 流式事件归一化 + SSE `/api/hermes/chat/stream` + 审批安全默认 + Skill UI `chatStream`）、**M5.3**（交互式审批/clarify：`chatId` + `decideApproval` + `POST /api/hermes/chat/decide` + 前端决策卡片 + 超时/流结束安全兜底；模型：`streamPrompt({model})` + `switchSessionModel`（`config.set model` 热切）+ SSE `model?` + 前端模型下拉 + `hermes -z -m`；subagent：观测/控制存在、spawn RPC 不存在——工作台化见 M10）、**M6**（AppManifest `24os-appmanifest/1`：解析校验 + install/update/uninstall/rollback 编排 + `market/apps` + `/api/market*` 合并与 apply + 签名 + 事件总线 + `apps/<id>.json` 脱敏存储）、**M7**（hooks 执行体 + outbound HMAC 签名推送 + Dashboard WS `/api/ws` + 前端状态抽屉）、**M8**（**定时 = 官方 Hermes Cron**：`server/hermes/cron.ts` 薄封装 `cron.manage` RPC + `cron.changed` 事件 + `server/routes/cron.ts`（confirm 门禁）+ `web/components/CronPanel.tsx`；自研 `bots.yaml`/30s 调度器**已删除**；官方 ticker 由 `HERMES_DESKTOP=1` 的 `hermes serve` 触发，`OS_CRON_TICKER=0` 关闭）、**M9**（**Bot=Profile 对齐官方**：`server/hermes/profileRpc.ts` 薄封装 `profiles.list/describe/configure/create/set_asset/get_asset` + 结构化错误；描述/persona 读写对齐 `SOUL.md`（官方 `profiles.configure{soul}` 优先、`via:"rpc"`；RPC 不可用回退文件写）；skill 启停走官方 `disabled_skills`（`config.yaml skills.disabled` 优先、meta 回退）；头像 `GET/POST /api/agents/:id/avatar`（confirm + PNG/JPEG ≤256KB）；`meta.json` 降级为「24H-OS 专有备注」，见 `docs/PROFILE_ALIGN.md`）、**M2 外壳**（`electron/main.cjs` + `preload.cjs`：复用/拉起 server、生产静态托管 `server/staticWeb.ts`、headless 退出 0；**M2 打包**：`scripts/build-server.mjs` → `dist/server.cjs` + electron-builder `npm run dist`，`asarUnpack` 解包 `dist/server.cjs`/`dist/web/**` + `main.cjs` 打包态路径映射）、**M2 杂项**（detect 对齐：`OS_HERMES_CLI` 显式无效不回退 / home 显式 env 无效即停；Skill 启停落盘 `POST /api/agents/:id/skills` + `skill-uis.disabled`；`invalidateAgentsCache` 写后失效；`GET /api/agents` 列表/详情合并 meta description/tags/skills）、**M10**（**subagent 观测/控制 + 事件透出**：`server/hermes/subagent.ts` 薄封装 `subagent.list/tail/interrupt/steer`、`delegation.pause`（风格对齐 `cron.ts`）+ `GET /api/hermes/subagents` + `/subagents/:id/{tail,interrupt,steer}` + `/subagents/pause`；`chat.ts` 把 `subagent.*` 归一化为 `type:"subagent"`（phase `spawn_requested/start/progress/thinking/tool/complete`，未知→`unknown`）并 SSE 透出；`getSubagentSupport()` → `{spawnApi:false,controlApi:true,events:true,mechanism:"delegate_task (in-session tool)"}`；旧 `POST /api/hermes/subagent` → 501 `SPAWN_UNSUPPORTED`。**通道对齐**：`docs/CHANNELS.md`（实测 `hermes gateway run` 无 token 退化为 "No messaging platforms enabled" 且保持运行；`hermes serve` 不启动平台适配器；投递推荐官方 `cron --deliver`；`hooks.outbound` 定位第三方回调扩展）。**Group Chat 不做**（属官方 Desktop，留 `TODO(M10+: groups.*)`））、**测试加固**（web vitest jsdom 110 例 + shared 8 例 → 全量 **509**；`.github/workflows/ci.yml` 的 `check`(node 20/22) + `dist`(dispatch/tag)）。
+已完成：**M1**（只读骨架）、**M1.1**（加固）、**M4**（Skill UI 宿主 + PPT demo）、**M4.1**（声明式 `ui/panel.yaml` 面板 + `outline` demo，零代码 / 无任意 JS，与命令式并存）、**M2-core**（生命周期 + 市场）、**M3**（配置编辑落盘）、**M5.0**（CLI/多 home 探测）、**M5.1**（TUI gateway + `callModel` 降级链，走 `llm.oneshot`）、**M5.x**（配置写入官方命令优先 + `via`；`resolveCliHome` 统一 home）、**M5.0b**（skillui 发现统一到 `activeHome`）、**M5.2**（`session.create`/`prompt.submit`/`session.interrupt`/`session.close` + 流式事件归一化 + SSE `/api/hermes/chat/stream` + 审批安全默认 + Skill UI `chatStream`）、**M5.3**（交互式审批/clarify：`chatId` + `decideApproval` + `POST /api/hermes/chat/decide` + 前端决策卡片 + 超时/流结束安全兜底；模型：`streamPrompt({model})` + `switchSessionModel`（`config.set model` 热切）+ SSE `model?` + 前端模型下拉 + `hermes -z -m`；subagent：观测/控制存在、spawn RPC 不存在——工作台化见 M10）、**M6**（AppManifest `24os-appmanifest/1`：解析校验 + install/update/uninstall/rollback 编排 + `market/apps` + `/api/market*` 合并与 apply + 签名 + 事件总线 + `apps/<id>.json` 脱敏存储）、**M7**（hooks 执行体 + outbound HMAC 签名推送 + Dashboard WS `/api/ws` + 前端状态抽屉）、**M8**（**定时 = 官方 Hermes Cron**：`server/hermes/cron.ts` 薄封装 `cron.manage` RPC + `cron.changed` 事件 + `server/routes/cron.ts`（confirm 门禁）+ `web/components/CronPanel.tsx`；自研 `bots.yaml`/30s 调度器**已删除**；官方 ticker 由 `HERMES_DESKTOP=1` 的 `hermes serve` 触发，`OS_CRON_TICKER=0` 关闭）、**M9**（**Bot=Profile 对齐官方**：`server/hermes/profileRpc.ts` 薄封装 `profiles.list/describe/configure/create/set_asset/get_asset` + 结构化错误；描述/persona 读写对齐 `SOUL.md`（官方 `profiles.configure{soul}` 优先、`via:"rpc"`；RPC 不可用回退文件写）；skill 启停走官方 `disabled_skills`（`config.yaml skills.disabled` 优先、meta 回退）；头像 `GET/POST /api/agents/:id/avatar`（confirm + PNG/JPEG ≤256KB）；`meta.json` 降级为「24H-OS 专有备注」，见 `docs/PROFILE_ALIGN.md`）、**M2 外壳**（`electron/main.cjs` + `preload.cjs`：复用/拉起 server、生产静态托管 `server/staticWeb.ts`、headless 退出 0；**M2 打包**：`scripts/build-server.mjs` → `dist/server.cjs` + electron-builder `npm run dist`，`asarUnpack` 解包 `dist/server.cjs`/`dist/web/**` + `main.cjs` 打包态路径映射）、**M2 杂项**（detect 对齐：`OS_HERMES_CLI` 显式无效不回退 / home 显式 env 无效即停；Skill 启停落盘 `POST /api/agents/:id/skills` + `skill-uis.disabled`；`invalidateAgentsCache` 写后失效；`GET /api/agents` 列表/详情合并 meta description/tags/skills）、**M10**（**subagent 观测/控制 + 事件透出**：`server/hermes/subagent.ts` 薄封装 `subagent.list/tail/interrupt/steer`、`delegation.pause`（风格对齐 `cron.ts`）+ `GET /api/hermes/subagents` + `/subagents/:id/{tail,interrupt,steer}` + `/subagents/pause`；`chat.ts` 把 `subagent.*` 归一化为 `type:"subagent"`（phase `spawn_requested/start/progress/thinking/tool/complete`，未知→`unknown`）并 SSE 透出；`getSubagentSupport()` → `{spawnApi:false,controlApi:true,events:true,mechanism:"delegate_task (in-session tool)"}`；旧 `POST /api/hermes/subagent` → 501 `SPAWN_UNSUPPORTED`。**通道对齐**：`docs/CHANNELS.md`（实测 `hermes gateway run` 无 token 退化为 "No messaging platforms enabled" 且保持运行；`hermes serve` 不启动平台适配器；投递推荐官方 `cron --deliver`；`hooks.outbound` 定位第三方回调扩展）。**Group Chat 不做**（属官方 Desktop，留 `TODO(M10+: groups.*)`））、**测试加固**（web vitest jsdom 110 例 + shared 8 例、server 415 例 → 全量 **533**；`.github/workflows/ci.yml` 的 `check`(node 20/22) + `dist`(dispatch/tag)）、**e2e**（Playwright headless 真实 Chromium：`playwright.config.ts` + `e2e/` 隔离临时 HOME/HERMES_HOME + 假 CLI，`e2e/sse-mock.ts` 浏览器层 mock SSE；`npm run test:e2e` 不并入 check；CI 增 `e2e` job）。
 
 待办：
 

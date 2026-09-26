@@ -59,7 +59,9 @@
 ├─ tsconfig.node.json     # server + vite.config（Node 环境）
 ├─ vite.config.ts         # root → web/，alias @shared → shared/
 ├─ vitest.config.ts       # vitest（默认 Node，web/** 经 docblock 切 jsdom，@shared 别名）
-├─ .github/workflows/ci.yml # CI：check（node 20/22）+ dist（tag/dispatch）
+├─ playwright.config.ts   # Playwright headless e2e（webServer 隔离临时 HOME/HERMES_HOME + 假 CLI）
+├─ e2e/                   # 真实 Chromium e2e（真实后端冒烟 + 浏览器层 mock SSE + 禁用 skill + 状态抽屉）
+├─ .github/workflows/ci.yml # CI：check（node 20/22）+ e2e（chromium）+ dist（tag/dispatch）
 ├─ scripts/
 │  └─ build-server.mjs    # esbuild 打包 server → dist/server.cjs（单文件 CJS，全量内联）
 ├─ electron/
@@ -198,6 +200,7 @@ npm run start        # 用 tsx 直接跑 server（生产原型模式）
 npm run electron     # 启动 Electron 壳（main = electron/main.cjs）
 npm run dev:desktop  # 先 build:web，再并发 dev:server + electron
 npm run dist         # build + electron-builder --linux（产物 release/*.AppImage / *.deb）
+npm run test:e2e     # Playwright headless e2e（先 build:web:e2e 再 chromium 跑 e2e/，需浏览器）
 ```
 
 ### Electron 桌面壳（M2 外壳）
@@ -907,21 +910,46 @@ curl -s -X POST localhost:4319/api/market/ppt-maker/apply \
        空 prompt 拒绝、昂贵模型确认取消/force 重试）、`StatusDrawer`（假 WebSocket：连接状态、
        事件摘要、非法帧忽略、退避重连、50 条上限）、`CronPanel`（加载官方 jobs、暂停/恢复、
        显示已暂停切换、创建表单、错误展示）、以及 `App`/`AgentDetail`/`Modal`/
-       `CommandResult`/`InstallAgentDialog`/`AgentConfigEditor` 的渲染与交互断言。
+        `CommandResult`/`InstallAgentDialog`/`AgentConfigEditor` 的渲染与交互断言。
+   13. **Playwright headless e2e（真实浏览器）**——`e2e/**/*.spec.ts` 用真实 Chromium 跑关键链路
+       （NAS 无显示器下唯一能「替人眼看 UI」的手段），**不并入 `npm run check`**（慢 + 需浏览器），
+       单独 `npm run test:e2e`。隔离与确定性：
+       - `playwright.config.ts#webServer` 执行 `npm run e2e:server`（`e2e/start-server.ts`），
+         自建**临时** `HOME`/`HERMES_HOME` + 假 CLI（`OS_HERMES_CLI`）+ 临时备份/元数据/工作区目录，
+         **绝不触碰真实 `~/.hermes` / `~/hermes-desktop` / `~/.24os`**；
+       - 仅监听 `127.0.0.1:4599`；前端用 `build:web:e2e` 注入 `VITE_API_BASE_URL=http://127.0.0.1:4599`
+         与静态托管同源；
+       - `/api/hermes/chat/stream` 在**浏览器层** mock（`e2e/sse-mock.ts` 覆写 `window.fetch` 为可控
+         `ReadableStream`；`page.route` 只能一次性返回整包，无法在审批处续流），`chat/decide` 由
+         `page.route` 捕获断言，**零模型成本**；其余 `/api/*` 打真实后端；
+       - 覆盖：A 真实后端冒烟（首页无 console error、`ppt`/`outline` 发现、outline 声明式面板字段/模板）、
+         B mock SSE（`{{key}}` 插值与请求体、delta 渐进渲染到 done；审批四按钮 → `chat/decide` body →
+         续流到 done）、B6 预置 `skills.disabled:[ppt]` 的禁用 UI、C7 Dashboard 状态抽屉 WS 已连接。
 - **验证命令统一为 `npm run check`**（等价于 `npm run typecheck && npm test`）。
-  当前共 **509** 个用例：**server 391**（node）+ **web 110**（jsdom）+ **shared 8**（插值边界）。
+  当前共 **533** 个用例：**server 415**（node）+ **web 110**（jsdom）+ **shared 8**（插值边界）。
+  `npm run typecheck` 额外用 `tsconfig.e2e.json` 覆盖 `e2e/**` 与 `playwright.config.ts`
+  （需 DOM lib，与 node/web 配置隔离）。
 
 ```bash
 npm run check            # 全量：typecheck + server(node) + web(jsdom) + shared
 npx vitest run web/      # 仅前端用例
 npx vitest run web/api.test.ts   # 单个文件
+npm run test:e2e         # Playwright headless e2e（真实浏览器；先 build:web:e2e）
+npx playwright test e2e/real-backend.spec.ts   # 单个 e2e 文件（需先构建 web）
+npx playwright test --ui # 有显示器时可交互调试
 ```
+
+> e2e 依赖 Chromium：CI 用 `npx playwright install --with-deps chromium`；本地
+> `npx playwright install chromium`（或复用系统 chromium，可用 `OS_E2E_CHROMIUM` 指定绝对路径）。
 
 ### CI（`.github/workflows/ci.yml`）
 
 - **`check`**：`push`(main) / `pull_request` / `workflow_dispatch` 触发，`ubuntu-latest` ×
   node `[20, 22]`，`npm ci` → `npm run check` → `npm run build`，上传 `dist/web`、`dist/server.cjs`
   为 artifact；job 级 `ELECTRON_SKIP_BINARY_DOWNLOAD=1` 跳过 electron 二进制下载加速。
+- **`e2e`**：`ubuntu-latest` + node 22，`npm ci` → `npx playwright install --with-deps chromium`
+  → `npm run test:e2e`（独立于 check 矩阵，避免拖慢单测）；失败时上传
+  `e2e/.artifacts`（截图/trace）与 `playwright-report` 为 artifact。
 - **`dist`**：仅 `workflow_dispatch` 或 `refs/tags/v*`（push tag）触发，`npm ci`（**不**跳过
   electron 下载）→ `npm run dist`，上传 `release/*.AppImage`、`*.deb` 为 artifact。
 - `concurrency` 取消同分支旧运行，`permissions: contents: read` 最小权限。

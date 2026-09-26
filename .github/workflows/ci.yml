@@ -54,6 +54,41 @@ jobs:
             dist/server.cjs
           if-no-files-found: error
 
+  # 真实浏览器 e2e（独立于 check 矩阵，避免拖慢单测）：隔离 HOME/HERMES_HOME +
+  # 假 CLI + 浏览器层 mock SSE，绝不调真实模型、不触碰真实 ~/.hermes。
+  # 仅用 chromium（不加 --with-deps 之外的浏览器），失败上传截图/trace。
+  e2e:
+    name: e2e (chromium)
+    runs-on: ubuntu-latest
+    env:
+      ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Run e2e (build:web + headless chromium)
+        run: npm run test:e2e
+
+      - name: Upload e2e artifacts (screenshots / traces / report)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-artifacts
+          path: |
+            e2e/.artifacts
+            playwright-report
+          if-no-files-found: ignore
+
   # 重 job：electron-builder 打包 Linux 安装包，仅在手动触发或 v* tag 时运行。
   dist:
     name: dist (linux)
