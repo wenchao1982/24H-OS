@@ -89,7 +89,7 @@ function isEmptyValue(value: unknown): boolean {
 /** 输出区一行。 */
 interface OutputLine {
   id: number;
-  kind: "text" | "tool" | "request" | "done" | "error";
+  kind: "text" | "tool" | "subagent" | "request" | "done" | "error";
   text: string;
 }
 
@@ -260,6 +260,14 @@ export default function DeclarativePanel({
           break;
         case "tool.complete":
           log("tool", `✔ 工具 ${event.name ?? "?"} 完成`);
+          break;
+        case "subagent":
+          log(
+            "subagent",
+            `◆ 子代理 ${event.phase ?? "?"}${event.goal ? `：${event.goal}` : ""}${
+              event.status ? `（${event.status}）` : ""
+            }`,
+          );
           break;
         case "approval":
           if (event.autoDecided) {

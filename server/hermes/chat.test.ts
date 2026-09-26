@@ -176,6 +176,52 @@ describe("normalizeGatewayEvent —— 事件归一化", () => {
   });
 });
 
+describe("normalizeGatewayEvent —— subagent.* 归一化（M10）", () => {
+  it("各 phase 映射 + identity / goal / toolName 透传", () => {
+    const base = {
+      subagent_id: "sa-1",
+      parent_id: "p-1",
+      child_session_id: "cs-1",
+      goal: "写报告",
+    };
+    expect(
+      normalizeGatewayEvent({ type: "subagent.spawn_requested", payload: base }),
+    ).toMatchObject({ type: "subagent", phase: "spawn_requested", subagentId: "sa-1", goal: "写报告" });
+    expect(normalizeGatewayEvent({ type: "subagent.start", payload: base })).toMatchObject({
+      type: "subagent",
+      phase: "start",
+      parentId: "p-1",
+      childSessionId: "cs-1",
+    });
+    expect(normalizeGatewayEvent({ type: "subagent.progress", payload: base })).toMatchObject({
+      type: "subagent",
+      phase: "progress",
+    });
+    expect(
+      normalizeGatewayEvent({ type: "subagent.thinking", payload: { ...base, text: "嗯" } }),
+    ).toMatchObject({ type: "subagent", phase: "thinking", text: "嗯" });
+    expect(
+      normalizeGatewayEvent({ type: "subagent.tool", payload: { ...base, tool_name: "shell" } }),
+    ).toMatchObject({ type: "subagent", phase: "tool", toolName: "shell" });
+    expect(
+      normalizeGatewayEvent({ type: "subagent.complete", payload: { ...base, status: "success" } }),
+    ).toMatchObject({ type: "subagent", phase: "complete", status: "success" });
+  });
+
+  it("未知 subagent.* → phase:'unknown'（保守，保留 event/payload）", () => {
+    const event = normalizeGatewayEvent({
+      type: "subagent.mystery",
+      payload: { subagent_id: "sa-9" },
+    });
+    expect(event).toMatchObject({ type: "subagent", phase: "unknown", event: "subagent.mystery" });
+    expect(event.payload).toEqual({ subagent_id: "sa-9" });
+  });
+
+  it("非 subagent 未知事件仍为 raw", () => {
+    expect(normalizeGatewayEvent({ type: "weird.event", payload: { x: 1 } }).type).toBe("raw");
+  });
+});
+
 describe("normalizeGatewayRequest —— 服务端请求归一化", () => {
   it("approval / clarify / 未知", () => {
     expect(
@@ -245,6 +291,30 @@ describe("streamPrompt —— 会话 + 流式事件", () => {
     await streamPrompt({ client, prompt: "p", onEvent: (event) => events.push(event) });
     expect(events[0].type).toBe("raw");
     expect(events[0].raw).toMatchObject({ type: "mystery.event" });
+    expect(events.at(-1)?.type).toBe("done");
+  });
+
+  it("subagent.* 事件透出为 type:'subagent'，不中断流", async () => {
+    const { client } = await makeConnected((method, _params, socket) => {
+      if (method === "prompt.submit") {
+        socket.send(eventFrame("subagent.spawn_requested", { subagent_id: "sa-1", goal: "g" }));
+        socket.send(eventFrame("subagent.start", { subagent_id: "sa-1" }));
+        socket.send(eventFrame("subagent.progress", { subagent_id: "sa-1", tool_count: 1 }));
+        socket.send(eventFrame("subagent.complete", { subagent_id: "sa-1", status: "success" }));
+        socket.send(eventFrame("message.complete", { text: "done" }));
+      }
+    });
+
+    const events: ChatStreamEvent[] = [];
+    await streamPrompt({ client, prompt: "p", onEvent: (event) => events.push(event) });
+    const subs = events.filter((event) => event.type === "subagent");
+    expect(subs.map((event) => event.phase)).toEqual([
+      "spawn_requested",
+      "start",
+      "progress",
+      "complete",
+    ]);
+    expect(subs[0]).toMatchObject({ subagentId: "sa-1", goal: "g" });
     expect(events.at(-1)?.type).toBe("done");
   });
 });

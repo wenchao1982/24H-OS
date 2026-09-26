@@ -213,6 +213,40 @@ body {
   font-size: 22px;
 }
 
+.detail-identity {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+}
+
+.agent-avatar {
+  flex: none;
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--border);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 22px;
+  font-weight: 700;
+  user-select: none;
+}
+
+.agent-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.btn-upload-avatar {
+  cursor: pointer;
+}
+
 .detail-path {
   margin: 0;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -1222,6 +1256,10 @@ body {
   color: #9dc0ff;
 }
 
+.decl-subagent {
+  color: #c9a6ff;
+}
+
 .decl-request {
   color: var(--amber);
 }
@@ -1513,4 +1551,128 @@ body {
 .status-event-summary {
   color: var(--text-dim);
   word-break: break-word;
+}
+
+/* ------------------------------------------------------------------ *
+ * M8 · 定时任务面板（官方 Cron 薄封装）
+ * ------------------------------------------------------------------ */
+
+.cron-panel {
+  padding: 16px 20px;
+  overflow: auto;
+}
+
+.cron-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.cron-warn {
+  color: #e0b050;
+}
+
+.cron-error {
+  color: #e06c6c;
+}
+
+.cron-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-dim);
+  margin: 8px 0;
+}
+
+.cron-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  margin-top: 8px;
+}
+
+.cron-table th,
+.cron-table td {
+  text-align: left;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+
+.cron-table th {
+  color: var(--text-faint);
+  font-weight: 500;
+}
+
+.cron-name {
+  font-weight: 600;
+}
+
+.cron-preview {
+  color: var(--text-faint);
+  font-size: 12px;
+  margin-top: 2px;
+  max-width: 360px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cron-off {
+  color: var(--text-faint);
+}
+
+.cron-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.cron-actions button,
+.cron-create button {
+  cursor: pointer;
+}
+
+.cron-actions button.danger {
+  color: #e06c6c;
+}
+
+.cron-create {
+  margin-top: 24px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cron-create-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.cron-create input,
+.cron-create textarea {
+  background: var(--surface-2, #1b1f27);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 8px 10px;
+  font: inherit;
+}
+
+.cron-create input {
+  flex: 1 1 220px;
+}
+
+.cron-create textarea {
+  resize: vertical;
+}
+
+.cron-create button {
+  align-self: flex-start;
 }

@@ -217,7 +217,7 @@ async function applyProfileConfig(
   manifest: AppManifest,
   deps: ApplyAppDeps,
   steps: string[],
-): Promise<"cli" | "file" | "none"> {
+): Promise<"cli" | "rpc" | "file" | "none"> {
   const profile = manifest.profile;
   if (!profile) return "none";
 
@@ -229,7 +229,7 @@ async function applyProfileConfig(
     timeoutMs: deps.timeoutMs,
   };
 
-  let via: "cli" | "file" | "none" = "none";
+  let via: "cli" | "rpc" | "file" | "none" = "none";
 
   if (profile.model?.default) {
     const result = await updateAgentConfig(
@@ -284,7 +284,7 @@ export async function reapplyProfileConfig(
   id: string,
   manifest: AppManifest,
   deps: ApplyAppDeps = {},
-): Promise<"cli" | "file" | "none"> {
+): Promise<"cli" | "rpc" | "file" | "none"> {
   const steps: string[] = [];
   return applyProfileConfig(id, manifest, deps, steps);
 }

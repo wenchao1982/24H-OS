@@ -5,6 +5,7 @@ import DeclarativePanel from "./components/DeclarativePanel";
 import InstallAgentDialog from "./components/InstallAgentDialog";
 import SkillHost from "./components/SkillHost";
 import StatusDrawer from "./components/StatusDrawer";
+import CronPanel from "./components/CronPanel";
 import AgentDetail from "./pages/AgentDetail";
 
 /**
@@ -13,7 +14,7 @@ import AgentDetail from "./pages/AgentDetail";
  *   左侧 —— Tab：Agents 列表 / Skill 市场 / Agent 市场（安装）
  *   右侧 —— Agent 详情 或 正在打开的 Skill UI
  */
-type Tab = "agents" | "market" | "store";
+type Tab = "agents" | "market" | "store" | "cron";
 
 export default function App() {
   const [status, setStatus] = useState<HermesStatus | null>(null);
@@ -125,6 +126,13 @@ export default function App() {
             >
               Agent 市场 <span className="count">{market.length}</span>
             </button>
+            <button
+              type="button"
+              className={tab === "cron" ? "tab active" : "tab"}
+              onClick={() => setTab("cron")}
+            >
+              定时
+            </button>
           </div>
 
           <div className="sidebar-toolbar">
@@ -227,7 +235,9 @@ export default function App() {
         </aside>
 
         <main className="content">
-          {selectedAgent ? (
+          {tab === "cron" ? (
+            <CronPanel />
+          ) : selectedAgent ? (
             <AgentDetail
               agent={selectedAgent}
               status={status}

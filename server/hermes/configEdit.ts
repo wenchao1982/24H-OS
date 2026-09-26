@@ -17,8 +17,21 @@ import type {
 import { resolveHermesCli, runHermes } from "./cli";
 import { resolveHomeForCli } from "./detect";
 import { LifecycleError } from "./errors";
-import { invalidateAgentsCache } from "./index";
-import { extractMcpServers, extractModel, parseAgentDir, parseConfigObject } from "./profiles";
+import { getSharedGatewayClient } from "./gateway";
+import { getActiveHome, invalidateAgentsCache } from "./index";
+import {
+  configureProfile,
+  type ProfileConfigurePatch,
+  type ProfileRpcClient,
+  type ProfileRpcDeps,
+} from "./profileRpc";
+import {
+  extractDescription,
+  extractMcpServers,
+  extractModel,
+  parseAgentDir,
+  parseConfigObject,
+} from "./profiles";
 
 /**
  * Agent 配置编辑层（M3）。
@@ -66,6 +79,12 @@ export interface ConfigEditDeps {
   cliPath?: string | null;
   /** 单条 CLI 命令超时（毫秒）。 */
   timeoutMs?: number;
+  /**
+   * 官方 Profile RPC 依赖（测试注入）。
+   * 生产不传 → 复用**已连接**的共享 gateway（`getSharedGatewayClient`，绝不额外 spawn）；
+   * 无共享 gateway 时回退文件写。
+   */
+  rpc?: ProfileRpcDeps;
 }
 
 /** id / profile 名合法格式。 */
@@ -90,6 +109,7 @@ const RESTORABLE_FILES = new Set([
   "config.yml",
   "config.json",
   "meta.json",
+  "SOUL.md",
 ]);
 
 /* ------------------------------------------------------------------ *
@@ -500,28 +520,204 @@ export function skillMetaEnabled(
 }
 
 /**
- * 扫描所有 agent 的 meta.json，收集被标记 `enabled:false` 的 skill 名。
- * 供 skill-uis 列表标注 `disabled:true`（重新启用后记录变 true，自然离开集合）。
+ * 收集所有 agent 被禁用的 skill 名（**小写化**）。
+ *
+ * 数据源优先级（M9）：
+ *   1. 官方 `config.yaml skills.disabled` —— 仅当能确定 home（显式 `deps.hermesHome`
+ *      或 `OS_HERMES_HOME`/`HERMES_HOME`）时读取，避免误扫真实 `~/.hermes`；
+ *   2. 工作台 meta.json 的 `skills.<name>.enabled === false` —— 官方未管理该 agent 时回退。
+ *
+ * 供 `skill-uis` 列表标注 `disabled:true`（重新启用后记录变 true，自然离开集合）。
  */
 export async function listDisabledSkillNames(
   deps: ConfigEditDeps = {},
 ): Promise<Set<string>> {
   const result = new Set<string>();
-  let entries: string[];
+  const officialManaged = new Set<string>();
+
+  // 1) 官方 config.yaml skills.disabled。
+  const home = officialHomeForRead(deps);
+  if (home) {
+    for (const { id, dir } of await listOfficialAgentDirs(home)) {
+      const official = await readOfficialDisabledFromDir(dir);
+      if (official) {
+        officialManaged.add(id);
+        for (const name of official) result.add(name);
+      }
+    }
+  }
+
+  // 2) meta.json 回退（官方已管理的 agent 跳过，避免旧记录覆盖官方状态）。
+  let entries: string[] = [];
   try {
     entries = await readdir(resolveMetaRoot(deps.metaDir), { withFileTypes: true })
       .then((list) => list.filter((entry) => entry.isDirectory()).map((entry) => entry.name))
       .catch(() => [] as string[]);
   } catch {
-    return result;
+    entries = [];
   }
   for (const id of entries) {
+    if (officialManaged.has(id)) continue;
     const meta = await readAgentMeta(id, deps);
     for (const [name, record] of Object.entries(metaSkillsOf(meta))) {
-      if (isPlainObject(record) && record.enabled === false) result.add(name);
+      if (isPlainObject(record) && record.enabled === false) {
+        result.add(name.toLowerCase());
+      }
     }
   }
   return result;
+}
+
+/* ------------------------------------------------------------------ *
+ * M9 · 官方 Profile 对齐（SOUL / description / disabled_skills）
+ * ------------------------------------------------------------------ */
+
+/**
+ * 解析官方 SOUL.md 路径：`$HERMES_HOME[/profiles/<name>]/SOUL.md`。
+ * 与 `profiles.configure {soul}` / `profiles.describe.soul` 同一落盘位置。
+ */
+export function resolveSoulPath(id: string, deps: ConfigEditDeps = {}): string {
+  const agentId = validateAgentId(id);
+  return path.join(resolveAgentDir(agentId, deps), "SOUL.md");
+}
+
+/** 从指定 profile 目录读取 SOUL.md（缺失 / 读失败返回空串）。 */
+export async function readSoulFromDir(dir: string): Promise<string> {
+  return (await readFile(path.join(dir, "SOUL.md"), "utf8").catch(() => "")) ?? "";
+}
+
+/** 读取 agent 的官方 persona 正文（SOUL.md）。 */
+export async function readSoul(
+  id: string,
+  deps: ConfigEditDeps = {},
+): Promise<string> {
+  try {
+    return await readSoulFromDir(resolveAgentDir(validateAgentId(id), deps));
+  } catch {
+    return "";
+  }
+}
+
+/** 读取官方短描述：`<profileDir>/profile.yaml` 的 `description`（缺失返回空串）。 */
+export async function readOfficialDescriptionFromDir(dir: string): Promise<string> {
+  const raw = await readFile(path.join(dir, "profile.yaml"), "utf8").catch(() => null);
+  if (raw === null) return "";
+  const parsed = parseConfigObject(raw);
+  const value = parsed?.description;
+  return typeof value === "string" ? value.trim() : "";
+}
+
+/**
+ * 读取官方 disabled_skills：`config.yaml` 的 `skills.disabled`（小写化）。
+ * 返回 `null` 表示 config.yaml 缺失 / 不可解析 / 无 `skills` mapping —— 未启用官方管理，
+ * 调用方回退 meta.json。
+ */
+export async function readOfficialDisabledFromDir(
+  dir: string,
+): Promise<Set<string> | null> {
+  const file = firstExisting(dir, ["config.yaml", "config.yml"]);
+  if (!file) return null;
+  const raw = await readFile(file, "utf8").catch(() => null);
+  if (raw === null) return null;
+  const config = parseConfigObject(raw);
+  if (!config) return null;
+  const skills = config.skills;
+  if (!isPlainObject(skills)) return null;
+  const disabled = skills.disabled;
+  const names = Array.isArray(disabled)
+    ? disabled.filter((item): item is string => typeof item === "string")
+    : [];
+  return new Set(names.map((name) => name.toLowerCase()));
+}
+
+/** 一个 agent 的启停数据源解析结果。 */
+export interface AgentDisabledSkills {
+  /** 官方 `skills.disabled` 集合；`null` = 未启用官方管理（须回退 meta）。 */
+  official: Set<string> | null;
+  /** 实际生效的禁用集合（官方优先，否则 meta 回退）。 */
+  disabled: Set<string>;
+}
+
+/** 读取 agent 的禁用 skill 集合（官方 `config.yaml skills.disabled` 优先，meta 回退）。 */
+export async function readAgentDisabledSkills(
+  id: string,
+  deps: ConfigEditDeps = {},
+): Promise<AgentDisabledSkills> {
+  let dir: string;
+  try {
+    dir = resolveAgentDir(id, deps);
+  } catch {
+    return { official: null, disabled: new Set() };
+  }
+  const official = await readOfficialDisabledFromDir(dir);
+  if (official) return { official, disabled: official };
+
+  const meta = await readMetaRaw(id, deps);
+  const disabled = new Set<string>();
+  for (const [name, record] of Object.entries(metaSkillsOf(meta))) {
+    if (isPlainObject(record) && record.enabled === false) {
+      disabled.add(name.toLowerCase());
+    }
+  }
+  return { official: null, disabled };
+}
+
+/**
+ * 解析官方 Profile 客户端（**不额外 spawn**）：
+ *   - 测试注入 `deps.rpc.client` / `deps.rpc.getClient`；
+ *   - 否则复用**已连接**的共享 gateway；无则返回 null（调用方回退文件写）。
+ */
+async function resolveProfileClient(
+  deps: ConfigEditDeps,
+): Promise<ProfileRpcClient | null> {
+  if (deps.rpc?.client) return deps.rpc.client;
+  if (deps.rpc?.getClient) {
+    try {
+      return await deps.rpc.getClient();
+    } catch {
+      return null;
+    }
+  }
+  return getSharedGatewayClient();
+}
+
+/**
+ * 可确定用于「官方读」的 home：
+ *   1. 显式 `deps.hermesHome`；
+ *   2. 显式 env（`OS_HERMES_HOME` / `HERMES_HOME`）；
+ *   3. 服务端已探测到的 activeHome（`getActiveHome()`，生产 `main()` 启动后非 null）。
+ *
+ * 三者皆无（例如单测未启动服务端）时返回 null —— 避免扫描真实 `~/.hermes`。
+ */
+function officialHomeForRead(deps: ConfigEditDeps): string | null {
+  if (deps.hermesHome && deps.hermesHome.trim()) {
+    return path.resolve(deps.hermesHome.trim());
+  }
+  const fromEnv = process.env.OS_HERMES_HOME ?? process.env.HERMES_HOME;
+  if (fromEnv && fromEnv.trim()) return path.resolve(fromEnv.trim());
+  const cached = getActiveHome();
+  return cached ? path.resolve(cached) : null;
+}
+
+/** 列出 home 下的 agent 目录（命名 profile + default home 本身）。 */
+async function listOfficialAgentDirs(
+  home: string,
+): Promise<Array<{ id: string; dir: string }>> {
+  const out: Array<{ id: string; dir: string }> = [];
+  const profilesDir = path.join(home, "profiles");
+  let names: string[] = [];
+  try {
+    names = (await readdir(profilesDir, { withFileTypes: true }))
+      .filter((entry) => entry.isDirectory() && ID_PATTERN.test(entry.name))
+      .map((entry) => entry.name);
+  } catch {
+    names = [];
+  }
+  for (const name of names) {
+    out.push({ id: name, dir: path.join(profilesDir, name) });
+  }
+  if (existsSync(home)) out.push({ id: "default", dir: home });
+  return out;
 }
 
 /* ------------------------------------------------------------------ *
@@ -549,7 +745,15 @@ export async function readAgentConfig(
   }
 
   const meta = await readMetaRaw(agentId, deps);
-  const description = typeof meta.description === "string" ? meta.description : "";
+  const soul = await readSoulFromDir(dir);
+  const officialDescription = await readOfficialDescriptionFromDir(dir);
+  const metaDescription =
+    typeof meta.description === "string" ? meta.description : "";
+  const description =
+    officialDescription ||
+    metaDescription ||
+    extractDescription(soul) ||
+    "";
   const tags = Array.isArray(meta.tags)
     ? meta.tags.filter((tag): tag is string => typeof tag === "string")
     : [];
@@ -562,6 +766,7 @@ export async function readAgentConfig(
     id: agentId,
     model,
     description,
+    soul,
     tags,
     mcpServers,
     envKeys,
@@ -635,13 +840,15 @@ async function loadConfigDocument(
 }
 
 /**
- * 更新模型 / 描述 / 标签。
- * - model → 先试官方 `hermes [-p <id>] config set model <value>`，失败回退 config.yaml
+ * 更新模型 / 人设（SOUL）/ 短描述 / 标签。
+ * - model → 官方 CLI `hermes [-p <id>] config set model <value>` 优先，失败回退 config.yaml
  *   （若原 `model` 是 mapping 则更新其 `default`，保留其它子字段）；
- * - description / tags → 工作台自有 `~/.24os/agents/<id>/meta.json`（非 Hermes 字段，不走 CLI）。
+ * - soul → 官方 `profiles.configure {soul}` 优先（复用已连接的共享 gateway），
+ *   失败回退写 `<profileDir>/SOUL.md`；
+ * - description → 官方 `profiles.configure {description}` 优先，失败回退 meta.json；
+ * - tags → 恒写工作台 meta.json（24H-OS 专有备注，Hermes 无对应字段）。
  *
- * `via` 反映 **Hermes 配置**的写入通道：model 走 CLI 则为 "cli"，否则 "file"；
- * 仅改 meta（描述 / 标签）时恒为 "file"。
+ * `via`：model 走 CLI → "cli"；soul/description 走 profile RPC → "rpc"；否则 "file"。
  */
 export async function updateAgentConfig(
   id: string,
@@ -655,7 +862,8 @@ export async function updateAgentConfig(
   const messages: string[] = [];
   const selector = profileSelectorArgs(agentId, dir, deps);
   let updated = false;
-  let via: "cli" | "file" = "file";
+  let via: "cli" | "rpc" | "file" = "file";
+  let usedRpc = false;
 
   if (patch.model !== undefined) {
     if (typeof patch.model !== "string" || patch.model.trim().length === 0) {
@@ -684,19 +892,69 @@ export async function updateAgentConfig(
     updated = true;
   }
 
-  if (patch.description !== undefined || patch.tags !== undefined) {
-    if (patch.description !== undefined && typeof patch.description !== "string") {
-      throw new LifecycleError("INVALID_VALUE", "description 必须是字符串。");
+  // 类型校验（在触碰磁盘 / RPC 前完成）。
+  if (patch.soul !== undefined && typeof patch.soul !== "string") {
+    throw new LifecycleError("INVALID_VALUE", "soul 必须是字符串。");
+  }
+  if (patch.description !== undefined && typeof patch.description !== "string") {
+    throw new LifecycleError("INVALID_VALUE", "description 必须是字符串。");
+  }
+  if (
+    patch.tags !== undefined &&
+    (!Array.isArray(patch.tags) || patch.tags.some((tag) => typeof tag !== "string"))
+  ) {
+    throw new LifecycleError("INVALID_VALUE", "tags 必须是字符串数组。");
+  }
+
+  const wantSoul = patch.soul !== undefined;
+  const wantDescription = patch.description !== undefined;
+  const wantTags = patch.tags !== undefined;
+  const soulText = patch.soul ?? "";
+  const descriptionText = patch.description ?? "";
+
+  let soulDoneRpc = false;
+  let descriptionDoneRpc = false;
+
+  // 官方优先：`profiles.configure {soul, description}`（共享 gateway 在跑时）。
+  if (wantSoul || wantDescription) {
+    const client = await resolveProfileClient(deps);
+    if (client) {
+      const rpcPatch: ProfileConfigurePatch = {};
+      if (wantSoul) rpcPatch.soul = soulText;
+      if (wantDescription) rpcPatch.description = descriptionText;
+      try {
+        const result = await configureProfile(agentId, rpcPatch, {
+          client,
+          timeoutMs: deps.timeoutMs,
+        });
+        const soulApplied = !wantSoul || result.applied.soul !== false;
+        const descriptionApplied = !wantDescription || result.applied.description !== false;
+        if (result.ok && !result.confirmRequired && soulApplied && descriptionApplied) {
+          usedRpc = true;
+          soulDoneRpc = wantSoul;
+          descriptionDoneRpc = wantDescription;
+          updated = true;
+        }
+      } catch {
+        // 官方 RPC 失败 → 走下面的文件回退。
+      }
     }
-    if (
-      patch.tags !== undefined &&
-      (!Array.isArray(patch.tags) || patch.tags.some((tag) => typeof tag !== "string"))
-    ) {
-      throw new LifecycleError("INVALID_VALUE", "tags 必须是字符串数组。");
-    }
+  }
+
+  // 文件回退（官方不可用 / 失败）：SOUL.md + meta.json。
+  if (wantSoul && !soulDoneRpc) {
+    const soulPath = resolveSoulPath(agentId, deps);
+    await writeWithBackup(agentId, soulPath, soulText, deps, acc);
+    messages.push("人设（SOUL）已写入 SOUL.md（via file）");
+    updated = true;
+  }
+  if (usedRpc && wantSoul) messages.push("人设（SOUL）已更新（via rpc）");
+  if (usedRpc && wantDescription) messages.push("短描述已更新（via rpc）");
+
+  if ((wantDescription && !descriptionDoneRpc) || wantTags) {
     const meta = await readMetaRaw(agentId, deps);
-    if (patch.description !== undefined) meta.description = patch.description;
-    if (patch.tags !== undefined) meta.tags = patch.tags;
+    if (wantDescription && !descriptionDoneRpc) meta.description = descriptionText;
+    if (wantTags) meta.tags = patch.tags;
     const file = metaPathFor(agentId, deps);
     await writeWithBackup(
       agentId,
@@ -705,14 +963,19 @@ export async function updateAgentConfig(
       deps,
       acc,
     );
-    messages.push("元数据（描述 / 标签）已更新（via file）");
+    const parts: string[] = [];
+    if (wantDescription && !descriptionDoneRpc) parts.push("短描述");
+    if (wantTags) parts.push("标签");
+    messages.push(`${parts.join(" / ")}已写入 meta.json（via file）`);
     updated = true;
   }
+
+  if (usedRpc && via !== "cli") via = "rpc";
 
   if (!updated) {
     throw new LifecycleError(
       "INVALID_VALUE",
-      "没有可更新的字段（model / description / tags 至少提供一个）。",
+      "没有可更新的字段（model / soul / description / tags 至少提供一个）。",
     );
   }
 
@@ -1080,12 +1343,14 @@ export async function restoreBackup(
 }
 
 /**
- * Skill 启停落盘（M2 杂项）：写入工作台 meta.json 的
- * `skills: { "<skill名>": { enabled: boolean } }`。
+ * Skill 启停落盘（M9 对齐官方）。
  *
- * 四重保证：confirm:true 门禁 → 备份 meta.json 到 ~/.24os/backups → 原子写 → 无密钥字段。
- * skill 名必须命中该 agent 已知 skill（id / name / skills 目录名），否则 INVALID_SKILL。
- * 恒为 via:"file"（非 Hermes 字段，无官方命令）。
+ * 官方优先：`profiles.configure {disabled_skills}`（写 `config.yaml skills.disabled`），
+ * 复用已连接的共享 gateway；RPC 不可用 / 失败 → 回退工作台 meta.json
+ * （`skills: { "<skill名>": { enabled: boolean } }`，保留 M2 杂项行为）。
+ *
+ * 四重保证：confirm:true 门禁 → 官方 RPC 由 Hermes 原子写 / 文件回退先备份再原子写 →
+ * 无密钥字段。skill 名必须命中该 agent 已知 skill，否则 INVALID_SKILL。
  */
 export async function setSkillEnabled(
   id: string,
@@ -1117,6 +1382,49 @@ export async function setSkillEnabled(
     );
   }
 
+  // 计算目标 disabled_skills（官方优先，meta 回退）。
+  const key = match.id.toLowerCase();
+  const official = await readOfficialDisabledFromDir(dir);
+  const nextDisabled = new Set<string>();
+  if (official) {
+    for (const name of official) nextDisabled.add(name);
+  } else {
+    const meta = await readMetaRaw(agentId, deps);
+    for (const [name, record] of Object.entries(metaSkillsOf(meta))) {
+      if (isPlainObject(record) && record.enabled === false) {
+        nextDisabled.add(name.toLowerCase());
+      }
+    }
+  }
+  if (input.enabled) nextDisabled.delete(key);
+  else nextDisabled.add(key);
+
+  // 官方优先：profiles.configure {disabled_skills}（仅当共享 gateway 已连接）。
+  const client = await resolveProfileClient(deps);
+  if (client) {
+    try {
+      const result = await configureProfile(
+        agentId,
+        { disabledSkills: [...nextDisabled].sort() },
+        { client, timeoutMs: deps.timeoutMs },
+      );
+      if (result.ok && !result.confirmRequired && result.applied.skills !== false) {
+        invalidateAgentsCache();
+        return {
+          ok: true,
+          action: "set-skill",
+          via: "rpc",
+          files: [],
+          backups: [],
+          message: `skill「${match.id}」已${input.enabled ? "启用" : "禁用"}（via rpc）。`,
+        };
+      }
+    } catch {
+      // 官方 RPC 失败 → 回退 meta.json。
+    }
+  }
+
+  // 回退：写入工作台 meta.json（保留 M2 杂项行为）。
   const meta = await readMetaRaw(agentId, deps);
   const previousSkills = metaSkillsOf(meta);
   const previousRecord = previousSkills[match.id];

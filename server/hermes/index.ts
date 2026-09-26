@@ -26,8 +26,22 @@ interface CacheEntry {
 
 let cache: CacheEntry | null = null;
 
+/**
+ * 最近一次探测得到的 activeHome（`computeSnapshot` 时记录）。
+ * 供「官方 config.yaml 读取」回退使用：未显式设置 home env 时，用服务端探测到的真实
+ * home 读取官方 `skills.disabled`。测试不启动 `main()` / 不触发快照时为 null → 官方读取
+ * 自动跳过（隔离真实 `~/.hermes`）。
+ */
+let lastActiveHome: string | null = null;
+
+/** 最近一次快照使用的 activeHome（未探测过返回 null）。 */
+export function getActiveHome(): string | null {
+  return lastActiveHome;
+}
+
 async function computeSnapshot(): Promise<AgentsResponse> {
   const detection = await detectHermes();
+  lastActiveHome = detection.activeHome;
   const mode = decideMode(detection);
   const agents =
     mode === "live" ? readProfiles(detection.activeHome) : getMockAgents();

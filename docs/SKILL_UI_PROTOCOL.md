@@ -165,12 +165,14 @@
 - 交互流超时 / 结束仍 pending → 自动安全默认兜底 + `decision.fallback` 事件。
 无论决策如何，该事件都会先透出给 UI。
 
-**subagent（M5 研究结论）**：gateway v0.21.3 契约存在观测/控制方法
-（`subagent.list/interrupt/tail/steer`、`delegation.status/pause`、`spawn_tree.*`）
-与 `subagent.*` 事件，但**未暴露直接 spawn/run 的 RPC**（无 `subagent.spawn` /
-`task.spawn` / `delegate.*`；子代理由父会话内 `delegate_task` 工具启动）。
-`POST /api/hermes/subagent`（`confirm:true` 门禁）当前返回 `501 UNSUPPORTED`
-+ 研究结论，**不造假调模型**；待官方 spawn 契约。
+**subagent（M10 观测/控制 + 事件）**：gateway v0.21.3 **没有直接 spawn/run RPC**
+（无 `subagent.spawn` / `task.spawn` / `delegate.*`）；子代理由父会话内 LLM 调用**工具
+`delegate_task`**在**同进程**内创建。工作台提供官方**观测/控制**薄封装
+（`subagent.list/tail/interrupt/steer`、`delegation.pause`），并把 `subagent.*` 事件归一化为
+`ChatStreamEvent{type:"subagent", phase}` 透出。`getSubagentSupport()` →
+`{ spawnApi:false, controlApi:true, events:true, mechanism:"delegate_task (in-session tool)" }`；
+旧 `POST /api/hermes/subagent` 语义修正为 `501 SPAWN_UNSUPPORTED` + 说明（不调模型）。
+端点见 §8。
 
 **双重门禁**：方法必须同时在 `capabilities` 与对应 `permissions` 中声明；
 任一缺失，broker 返回 `403 FORBIDDEN`。
@@ -323,4 +325,9 @@ actions:
 | `POST /api/skill-host/invoke` | broker：`{ skillId, method, params }` → `{ ok, result?, error? }`；**禁用 → 403 `SKILL_DISABLED`**。 |
 | `POST /api/hermes/chat/stream` | gateway 流式对话（SSE）：body `{ profile?, prompt, chatId?, model?, force? }`，逐条 `data: <ChatStreamEvent>`；SSE 为交互流（approval/clarify 挂起待 decide，超时安全兜底）；`force:true` = 昂贵模型确认后的重试；`OS_GATEWAY_AUTO_APPROVE=1` 时审批与昂贵模型均优先自动放行。 |
 | `POST /api/hermes/chat/decide` | M5 交互式决策：`{ chatId, type: "approval"\|"clarify", choice?, answer? }` → `{ ok, requestId, decision }`；400/404/409 见 §3。（模型昂贵确认重试走 SSE `force`，不经此端点。） |
-| `POST /api/hermes/subagent` | M5：`{ profile?, prompt, confirm:true }`；当前 gateway 契约无 spawn RPC → `501 UNSUPPORTED` + 研究结论（不调模型）。 |
+| `GET /api/hermes/subagents?sessionId=<id>` | M10：列出会话活跃子代理（`subagent.list`）；无 sessionId → 0 条（按会话隔离）。只读。 |
+| `GET /api/hermes/subagents/:id/tail?sessionId=<id>` | M10：最近 16KB 转录（`subagent.tail`）。只读。 |
+| `POST /api/hermes/subagents/:id/steer` | M10：`{ sessionId, text }` 投递 steering（非破坏，不需 confirm）。 |
+| `POST /api/hermes/subagents/:id/interrupt` | M10：`{ sessionId, confirm:true }` 硬中断（控制面须 confirm）。 |
+| `POST /api/hermes/subagents/pause` | M10：`{ paused?, confirm:true }` 全局暂停/恢复 spawn（须 confirm）。 |
+| `POST /api/hermes/subagent` | M10 已废弃 spawn 入口：`{ profile?, prompt }` → `501 SPAWN_UNSUPPORTED` + 能力说明（不调模型）。 |

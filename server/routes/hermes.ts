@@ -1,4 +1,4 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply } from "fastify";
 import type {
   ApiError,
   ChatDecideRequest,
@@ -6,7 +6,9 @@ import type {
   ChatStreamRequest,
   GatewayStatus,
   HermesStatus,
+  SubagentPauseRequest,
   SubagentRunRequest,
+  SubagentsResponse,
 } from "@shared/types";
 import { getSnapshot } from "../hermes";
 import { getLastCompleteError, getLastCompleteVia } from "../hermes/complete";
@@ -21,7 +23,16 @@ import {
   statusForCode,
 } from "../hermes/errors";
 import { ensureGateway, getGatewaySnapshot, stopSharedGateway } from "../hermes/gateway";
-import { runSubagent } from "../hermes/subagent";
+import {
+  getSubagentSupport,
+  interruptSubagent,
+  listSubagents,
+  runSubagent,
+  setSpawnPaused,
+  steerSubagent,
+  tailSubagent,
+  type SubagentDeps,
+} from "../hermes/subagent";
 import { broadcast } from "../dashboard/bus";
 import type { ChatStreamEvent as ChatEvent } from "@shared/types";
 
@@ -34,10 +45,16 @@ import type { ChatStreamEvent as ChatEvent } from "@shared/types";
  */
 
 /** 路由依赖注入（测试隔离用；缺省走真实实现）。 */
-export interface HermesRouteDeps {
+export interface HermesRouteDeps extends SubagentDeps {
   streamPrompt?: typeof streamPrompt;
   decideApproval?: typeof decideApproval;
   runSubagent?: typeof runSubagent;
+  listSubagents?: typeof listSubagents;
+  interruptSubagent?: typeof interruptSubagent;
+  tailSubagent?: typeof tailSubagent;
+  steerSubagent?: typeof steerSubagent;
+  setSpawnPaused?: typeof setSpawnPaused;
+  getSubagentSupport?: typeof getSubagentSupport;
 }
 
 /** 组装 gateway 状态（合并进程快照与最近一次补全通道）。 */
@@ -74,6 +91,38 @@ export async function hermesRoutes(
   const runStream = deps.streamPrompt ?? streamPrompt;
   const runDecide = deps.decideApproval ?? decideApproval;
   const runSub = deps.runSubagent ?? runSubagent;
+  const runListSub = deps.listSubagents ?? listSubagents;
+  const runInterruptSub = deps.interruptSubagent ?? interruptSubagent;
+  const runTailSub = deps.tailSubagent ?? tailSubagent;
+  const runSteerSub = deps.steerSubagent ?? steerSubagent;
+  const runPauseSpawn = deps.setSpawnPaused ?? setSpawnPaused;
+  const runSupport = deps.getSubagentSupport ?? getSubagentSupport;
+
+  /** 控制类操作门禁：`confirm !== true` → CONFIRM_REQUIRED（不触碰 gateway）。 */
+  const assertConfirmed = (
+    body: { confirm?: unknown } | undefined,
+    what: string,
+  ): void => {
+    if (!body || body.confirm !== true) {
+      throw new LifecycleError(
+        "CONFIRM_REQUIRED",
+        `${what}需显式 confirm:true。`,
+      );
+    }
+  };
+
+  /** 统一错误响应（LifecycleError → 码 + HTTP）。 */
+  const sendError = (reply: FastifyReply, error: unknown): ApiError => {
+    if (error instanceof LifecycleError) {
+      reply.code(statusForCode(error.code));
+      return { error: error.code, message: error.message };
+    }
+    reply.code(500);
+    return {
+      error: "INTERNAL_ERROR",
+      message: error instanceof Error ? error.message : String(error),
+    };
+  };
 
   // GET /api/hermes/status —— Hermes 探测结果。
   app.get("/api/hermes/status", async (): Promise<HermesStatus> => {
@@ -296,14 +345,113 @@ export async function hermesRoutes(
     },
   );
 
-  // POST /api/hermes/subagent —— subagent 运行（M5 研究结论：spawn 契约不存在）。
-  // 真实会调模型的路径设 confirm:true 门禁；当前返回 501 UNSUPPORTED + 研究结论。
+  // ── subagent 观测/控制（M10）─────────────────────────────────────────
+  // 子代理**没有** spawn RPC；由会话内 `delegate_task` 工具创建，经 chat 流透出
+  // `subagent.*` 事件。工作台只提供观测/控制薄封装：
+  //   GET  /api/hermes/subagents?sessionId=<id>        —— 列出会话活跃子代理（只读）
+  //   GET  /api/hermes/subagents/:id/tail?sessionId=   —— 最近 16KB 转录（只读）
+  //   POST /api/hermes/subagents/:id/steer            —— 投递 steering（非破坏，不需 confirm）
+  //   POST /api/hermes/subagents/:id/interrupt        —— 硬中断（控制面，须 confirm:true）
+  //   POST /api/hermes/subagents/pause                —— 全局暂停/恢复 spawn（须 confirm:true）
+
+  app.get<{ Querystring: { sessionId?: string } }>(
+    "/api/hermes/subagents",
+    async (request, reply): Promise<SubagentsResponse | ApiError> => {
+      const sessionId =
+        typeof request.query.sessionId === "string" && request.query.sessionId.trim() !== ""
+          ? request.query.sessionId.trim()
+          : "";
+      // 子代理按会话隔离：无 sessionId 无法向官方查询，降级为 0 条（不拉起 gateway）。
+      if (sessionId === "") {
+        return {
+          subagents: [],
+          count: 0,
+          sessionId: null,
+          support: runSupport(),
+          message: "子代理按会话隔离；未提供 sessionId，按 0 条返回（如需观测请在 chat 会话内查询）。",
+        };
+      }
+      try {
+        return await runListSub(sessionId, deps);
+      } catch (error) {
+        return sendError(reply, error);
+      }
+    },
+  );
+
+  app.get<{ Params: { id: string }; Querystring: { sessionId?: string } }>(
+    "/api/hermes/subagents/:id/tail",
+    async (request, reply) => {
+      try {
+        return await runTailSub(
+          request.query.sessionId,
+          request.params.id,
+          deps,
+        );
+      } catch (error) {
+        return sendError(reply, error);
+      }
+    },
+  );
+
+  app.post<{
+    Params: { id: string };
+    Body: { sessionId?: string; text?: string };
+  }>(
+    "/api/hermes/subagents/:id/steer",
+    async (request, reply) => {
+      try {
+        return await runSteerSub(
+          request.body?.sessionId,
+          request.params.id,
+          request.body?.text,
+          deps,
+        );
+      } catch (error) {
+        return sendError(reply, error);
+      }
+    },
+  );
+
+  app.post<{
+    Params: { id: string };
+    Body: { sessionId?: string; confirm?: boolean };
+  }>(
+    "/api/hermes/subagents/:id/interrupt",
+    async (request, reply) => {
+      try {
+        assertConfirmed(request.body, "中断子代理");
+        return await runInterruptSub(
+          request.body?.sessionId,
+          request.params.id,
+          deps,
+        );
+      } catch (error) {
+        return sendError(reply, error);
+      }
+    },
+  );
+
+  app.post<{ Body: SubagentPauseRequest }>(
+    "/api/hermes/subagents/pause",
+    async (request, reply) => {
+      try {
+        assertConfirmed(request.body, "全局暂停子代理 spawn");
+        return await runPauseSpawn(request.body?.paused, deps);
+      } catch (error) {
+        return sendError(reply, error);
+      }
+    },
+  );
+
+  // POST /api/hermes/subagent —— 已废弃的 spawn 入口（M10 语义修正）。
+  // 不提供 spawn（子代理由会话内 delegate_task 触发）；返回 501 + 能力说明，不调模型。
   app.post<{ Body: Partial<SubagentRunRequest> }>(
     "/api/hermes/subagent",
     async (request, reply): Promise<
       | {
           ok: boolean;
-          supported: boolean;
+          spawnApi: boolean;
           code: string;
           message: string;
           contract: import("@shared/types").SubagentSupportInfo;
@@ -311,40 +459,18 @@ export async function hermesRoutes(
       | ApiError
     > => {
       const body = request.body ?? ({} as Partial<SubagentRunRequest>);
-      const prompt = typeof body.prompt === "string" ? body.prompt : "";
-      if (body.confirm !== true) {
-        reply.code(400);
-        return {
-          error: "CONFIRM_REQUIRED",
-          message: "subagent 会真实调用模型，需要 confirm:true。",
-        } satisfies ApiError;
-      }
-      if (prompt.trim() === "") {
-        reply.code(400);
-        return {
-          error: "INVALID_VALUE",
-          message: "prompt 不能为空。",
-        } satisfies ApiError;
-      }
       try {
         const result = await runSub({
-          prompt,
+          prompt: typeof body.prompt === "string" ? body.prompt : "",
           ...(typeof body.profile === "string" && body.profile
             ? { profile: body.profile }
             : {}),
         });
-        if (!result.ok) {
-          reply.code(result.code === "UNSUPPORTED" ? 501 : 502);
-        }
+        // 无 spawn API：固定 501 + 说明（不依赖具体 code）。
+        reply.code(501);
         return result;
       } catch (error) {
-        const code =
-          error instanceof LifecycleError ? error.code : null;
-        reply.code(code ? statusForCode(code) : 500);
-        return {
-          error: code ?? "INTERNAL_ERROR",
-          message: (error as Error).message,
-        } satisfies ApiError;
+        return sendError(reply, error);
       }
     },
   );

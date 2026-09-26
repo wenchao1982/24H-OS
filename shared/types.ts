@@ -384,6 +384,7 @@ export type ChatStreamEventType =
   | "thinking"
   | "tool.start"
   | "tool.complete"
+  | "subagent"
   | "approval"
   | "clarify"
   | "done"
@@ -431,6 +432,33 @@ export interface ChatStreamEvent {
   /** done：turn 状态（complete / error / interrupted）与 usage。 */
   status?: string;
   usage?: unknown;
+  /******************************************************************
+   * subagent（M5 观测/控制 → 事件透出）：由会话内 `delegate_task` 工具
+   * 产生的 `subagent.*` gateway 事件归一化而来（phase 见下）。
+   ******************************************************************/
+  /**
+   * subagent：阶段。
+   * 官方事件 `subagent.spawn_requested/start/progress/thinking/tool/complete`
+   * 依次映射为同名 phase；无法识别时保守置为 `"unknown"`（原始 type 仍在 event 字段）。
+   */
+  phase?:
+    | "spawn_requested"
+    | "start"
+    | "progress"
+    | "thinking"
+    | "tool"
+    | "complete"
+    | "unknown";
+  /** subagent：子代理 id。 */
+  subagentId?: string;
+  /** subagent：父（发起方）id。 */
+  parentId?: string;
+  /** subagent：子会话 id。 */
+  childSessionId?: string;
+  /** subagent：子代理目标。 */
+  goal?: string;
+  /** subagent：progress/tool 阶段涉及的工具名。 */
+  toolName?: string;
   /** raw：原始帧。 */
   raw?: unknown;
 }
@@ -482,36 +510,116 @@ export interface ChatDecideResult {
 }
 
 /* ------------------------------------------------------------------ *
- * M5 · subagent（gateway 契约研究结论）
+ * M5/M10 · subagent（观测/控制 + 事件；创建走会话内 delegate_task）
  * ------------------------------------------------------------------ */
 
-/** GET 研究结论 / subagent 运行结果携带的能力说明。 */
+/**
+ * subagent 能力说明（研究结论）。
+ *
+ * gateway v0.21.3 现状：**没有直接 spawn/run 的 RPC**；子代理由父会话内 LLM
+ * 调用 `delegate_task` 工具在同一进程内创建（`delegation.max_spawn_depth` 默认 1）。
+ * 可用的 RPC 只有观测/控制：`subagent.list/tail/interrupt/steer`、
+ * `delegation.status/pause`、`spawn_tree.*`；`subagent.*` 事件由会话内工具发出，
+ * 经 chat 流透出。
+ */
 export interface SubagentSupportInfo {
-  /** 是否存在直接 spawn/run subagent 的 gateway RPC。 */
-  spawnSupported: boolean;
-  /** 是否存在 subagent 观测/控制 RPC（list/tail/interrupt/steer/delegation.*）。 */
-  observeSupported: boolean;
+  /** 是否存在直接 spawn/run subagent 的 gateway RPC（当前 false）。 */
+  spawnApi: boolean;
+  /** 是否存在 subagent 观测/控制 RPC（list/tail/interrupt/steer/delegation.*）（true）。 */
+  controlApi: boolean;
+  /** 是否存在 subagent.* 事件（true）。 */
+  events: boolean;
+  /** 子代理创建机制说明：`delegate_task (in-session tool)`。 */
+  mechanism: string;
   /** 研究依据的 gateway 契约版本。 */
   contractGateway: string;
   /** 已确认存在的观测/控制方法名。 */
   methods: string[];
   /** 已确认存在的 subagent.* 事件名。 */
-  events: string[];
+  eventNames: string[];
   /** 中文结论说明。 */
   note: string;
 }
 
-/** POST /api/hermes/subagent 请求体（真实调模型，需 confirm:true）。 */
+/** 一个活跃子代理的快照（对齐官方 `SubagentSnapshot`）。 */
+export interface SubagentInfo {
+  subagent_id: string;
+  parent_id?: string | null;
+  depth?: number | null;
+  goal?: string | null;
+  delegation_id?: string | null;
+  model?: string | null;
+  started_at?: number | null;
+  status?: string | null;
+  tool_count?: number | null;
+  last_tool?: string | null;
+  accepting_steer?: boolean | null;
+}
+
+/** GET /api/hermes/subagents 响应。 */
+export interface SubagentsResponse {
+  subagents: SubagentInfo[];
+  count: number;
+  /** 查询所用会话 id；未提供时为 null（此时按 0 条返回，见 message）。 */
+  sessionId: string | null;
+  support: SubagentSupportInfo;
+  message: string;
+}
+
+/** GET /api/hermes/subagents/:id/tail 响应（官方 `subagent.tail`）。 */
+export interface SubagentTailResult {
+  subagent_id: string;
+  available: boolean;
+  text: string;
+  truncated: boolean;
+}
+
+/** POST /api/hermes/subagents/:id/interrupt 响应（控制面，须 confirm:true）。 */
+export interface SubagentInterruptResult {
+  ok: boolean;
+  found: boolean;
+  subagent_id: string;
+  message: string;
+}
+
+/** POST /api/hermes/subagents/:id/steer 响应（非破坏，不需 confirm）。 */
+export interface SubagentSteerResult {
+  ok: boolean;
+  /** queued | rejected（官方语义）。 */
+  status: string;
+  subagent_id: string;
+  text: string;
+  message: string;
+}
+
+/** POST /api/hermes/subagents/pause 请求体（全局暂停 spawn，控制面须 confirm:true）。 */
+export interface SubagentPauseRequest {
+  /** 缺省 true。 */
+  paused?: boolean;
+  confirm?: boolean;
+}
+
+/** POST /api/hermes/subagents/pause 响应。 */
+export interface SubagentPauseResult {
+  ok: boolean;
+  paused: boolean;
+  message: string;
+}
+
+/** POST /api/hermes/subagent 请求体（保留：本端点不提供 spawn）。 */
 export interface SubagentRunRequest {
   profile?: string;
   prompt: string;
   confirm?: boolean;
 }
 
-/** POST /api/hermes/subagent 响应体。 */
+/**
+ * POST /api/hermes/subagent 响应体。
+ * `spawnApi:false` → 语义为「无 spawn API，子代理由会话内 delegate_task 触发」。
+ */
 export interface SubagentRunResult {
   ok: boolean;
-  supported: boolean;
+  spawnApi: boolean;
   code: string;
   message: string;
   contract: SubagentSupportInfo;
@@ -793,6 +901,8 @@ export interface AgentConfig {
   model: string | null;
   /** 工作台自有元数据 ~/.24os/agents/<id>/meta.json 里的描述。 */
   description: string;
+  /** 官方 persona 正文（`<profileDir>/SOUL.md`，读 `profiles.describe.soul` 同一来源）。 */
+  soul: string;
   /** 工作台自有元数据里的标签。 */
   tags: string[];
   /** config.yaml 顶层 mcp_servers。 */
@@ -811,7 +921,10 @@ export interface AgentConfig {
 /** PATCH /api/agents/:id/config 请求体。 */
 export interface UpdateAgentConfigRequest {
   model?: string;
+  /** 官方短描述（profiles.describe.description → `<profileDir>/profile.yaml`）。 */
   description?: string;
+  /** 官方 persona 正文（profiles.configure.soul → `<profileDir>/SOUL.md`）。 */
+  soul?: string;
   tags?: string[];
   /** 写操作必须显式 true，否则 CONFIRM_REQUIRED。 */
   confirm?: boolean;
@@ -868,9 +981,10 @@ export interface ConfigEditResult {
   /**
    * 实际写入通道：
    *   - "cli"：通过官方 `hermes` 命令落盘（推荐，避免与 Hermes 进程并发写冲突）；
-   *   - "file"：CLI 不可用 / 命令失败时回退为工作台直接文件写（备份 + 原子写）。
+   *   - "rpc"：通过官方 gateway `profiles.configure` 落盘（SOUL / disabled_skills 等）；
+   *   - "file"：官方通道不可用 / 失败时回退为工作台直接文件写（备份 + 原子写）。
    */
-  via: "cli" | "file";
+  via: "cli" | "rpc" | "file";
   /** 被修改 / 写入的文件绝对路径（走 CLI 时为空，因为由 Hermes 自身写入）。 */
   files: string[];
   /** 写操作前生成的备份文件绝对路径。 */
@@ -906,47 +1020,133 @@ export interface DashboardEvent {
   payload?: Record<string, unknown>;
 }
 
-/** Bot Mode 单条配置（bots.yaml）。 */
-export interface BotConfig {
-  /** `^[a-z0-9][a-z0-9_-]{0,63}$`。 */
-  id: string;
-  /** 每天 HH:MM（服务器本地时区），匹配 `^\d{2}:\d{2}$`。 */
+/* ------------------------------------------------------------------ *
+ * M8 · 官方 Cron 薄封装（定时 = Hermes cron，工作台只做 UI + 触发器）
+ * ------------------------------------------------------------------ */
+
+/**
+ * 官方 Cron 任务行，字段对齐 gateway `cron.manage` 的 `CronJobRow`
+ * （`tui_gateway/contracts/tools_commands.py`）。
+ * 官方新增字段通过索引签名透传，前端按需显示。
+ */
+export interface CronJob {
+  job_id: string;
+  /** 官方 jobs.json 里也用 `id`；列表映射时补齐。 */
+  id?: string;
+  name: string;
+  skill?: string | null;
+  skills?: string[];
+  /** 提示词预览（官方只给截断预览，避免正文回显）。 */
+  prompt_preview: string;
+  model?: string | null;
+  provider?: string | null;
+  base_url?: string | null;
   schedule: string;
-  /** 目标 Hermes profile（缺省 default）。 */
-  profile?: string;
-  prompt: string;
-  /** 推送目标 plugin 名（来自已安装 app 的 plugins）。 */
-  notify?: string[];
-  /** 默认 true；`enabled:false` 或 `disable:true` 关闭。 */
+  repeat?: number | string | null;
+  deliver?: string | null;
+  next_run_at?: string | null;
+  last_run_at?: string | null;
+  last_status?: string | null;
+  last_delivery_error?: string | null;
+  last_delivery_unverified?: boolean | null;
+  last_fire_error?: string | null;
+  last_error?: string | null;
   enabled: boolean;
+  state?: string | null;
+  paused_at?: string | null;
+  paused_reason?: string | null;
+  workdir?: string | null;
+  script?: string | null;
+  reasoning_effort?: string | null;
+  monitor_script?: string | null;
+  monitor_url?: string | null;
+  monitor_state?: unknown;
+  no_agent?: boolean | null;
+  enabled_toolsets?: string[] | null;
+  continuity?: boolean | null;
+  context_from?: string[] | null;
+  attach_to_session?: boolean | null;
+  [key: string]: unknown;
 }
 
-/** Bot 最近一次运行结果。 */
-export interface BotRunResult {
-  botId: string;
-  status: "ok" | "error";
-  at: string;
-  /** 输出长度（不广播正文）。 */
-  len?: number;
-  error?: string;
+/** Cron 触发器信息（gateway 是否带 HERMES_DESKTOP=1 拉起官方 ticker）。 */
+export interface CronTickerInfo {
+  /** OS_CRON_TICKER !== "0"：是否让 `hermes serve` 带 HERMES_DESKTOP=1 触发官方 ticker。 */
+  enabled: boolean;
+  /** 共享 gateway 进程是否在跑。 */
+  gatewayRunning: boolean;
+  /** gateway WS 是否已连接。 */
+  gatewayConnected: boolean;
 }
 
-/** GET /api/bots 列表项。 */
-export interface BotListItem extends BotConfig {
-  /** 下次计划运行的 ISO 时间；enabled=false 时为 null。 */
-  nextRun: string | null;
-  /** 最近一次运行（内存）。 */
-  lastRun: BotRunResult | null;
+/** GET /api/cron/jobs 响应（官方 jobs 列表 + 触发器状态）。 */
+export interface CronJobsResponse {
+  jobs: CronJob[];
+  count: number;
+  includeDisabled: boolean;
+  /** profile scope（profile 查询时官方回填；否则 null）。 */
+  scoped: string | null;
+  ticker: CronTickerInfo;
+  warning: string | null;
+  message: string;
 }
 
-/** GET /api/bots 响应。 */
-export interface BotsResponse {
-  bots: BotListItem[];
-  /** 调度器是否已启动（OS_BOT_ENABLED=1）。 */
-  schedulerRunning: boolean;
-  /** 配置文件路径。 */
-  file: string;
-  /** 最近运行日志（环形，最多 100）。 */
-  log: BotRunResult[];
+/** POST /api/cron/jobs 请求体（写操作，须 confirm:true）。 */
+export interface CronJobAddRequest {
+  /** 写操作门禁：缺失或非 true → CONFIRM_REQUIRED，不触碰磁盘。 */
+  confirm?: boolean;
+  /** `^[a-z0-9][a-z0-9_-]{0,63}$`。 */
+  name: string;
+  /** 官方 schedule 语义：`30m` / `every 2h` / `every monday 9am` / `0 9 * * *` / ISO。 */
+  schedule: string;
+  /** 自包含提示词（官方 RPC add 要求 prompt 或 skills）。 */
+  prompt: string;
+  repeat?: number;
+  continuity?: boolean;
+  /** origin|local|telegram|discord|signal|platform:chat_id|bot-chat[:profile]。 */
+  deliver?: string;
+  profile?: string;
+}
+
+/** Cron 变更动作结果（add/remove/pause/resume/run）。 */
+export interface CronActionResult {
+  ok: true;
+  action: "add" | "remove" | "pause" | "resume" | "run";
+  jobId?: string;
+  name?: string;
+  schedule?: string;
+  nextRunAt?: string | null;
+  /** 官方回调提示（如「gateway 未运行，任务不会自动触发」）。 */
+  warning?: string | null;
+  message?: string;
+}
+
+/* ------------------------------------------------------------------ *
+ * M9 · 官方 Profile 对齐（头像 / SOUL）
+ * ------------------------------------------------------------------ */
+
+/**
+ * GET /api/agents/:id/avatar 响应。
+ * `data` 是 data URL（`data:image/png;base64,...`）；未设置头像时 `found:false` 且 `data:null`。
+ */
+export interface AgentAvatar {
+  found: boolean;
+  mime: string | null;
+  size: number | null;
+  data: string | null;
+}
+
+/** POST /api/agents/:id/avatar 请求体（写操作须 confirm:true）。 */
+export interface AgentAvatarUploadRequest {
+  /** data URL 或裸 base64；仅 PNG / JPEG，≤256KB。 */
+  data: string;
+  confirm?: boolean;
+}
+
+/** POST /api/agents/:id/avatar 响应。 */
+export interface AgentAvatarUploadResult {
+  ok: boolean;
+  /** 写入的字节数。 */
+  size: number;
   message: string;
 }

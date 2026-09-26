@@ -19,7 +19,7 @@ web-first（无显示器环境亦可开发；Electron 为桌面分发外壳，`e
 - `server/` — Fastify 内核桥接层，端口 **4319**，封装 `hermes` CLI 与 `~/.hermes`
 - `web/` — React 18 + TypeScript + Vite，dev 端口 **5173**（自动代理 `/api` → 4319）
 - `shared/` — 前后端共享 TS 类型 + `panel.ts`（插值工具，alias `@shared/*`）
-- `docs/` — `SKILL_UI_PROTOCOL.md`（命令式 + 声明式）、`CONFIG_EDITING.md`、`APP_MANIFEST.md`（M6 + M7 hooks/WS/bots）
+- `docs/` — `SKILL_UI_PROTOCOL.md`（命令式 + 声明式）、`CONFIG_EDITING.md`、`APP_MANIFEST.md`（M6 + M7 hooks/WS）、`CRON.md`（M8 官方 Cron 薄封装 + bots.yaml 迁移）、`CHANNELS.md`（M10 通道对齐 / 投递推荐 / Group Chat 决策）、`PROFILE_ALIGN.md`（M9 Bot=Profile / SOUL / disabled_skills / 头像 / meta.json 降级）
 - `examples/skills/` — 示例功能性 skill（`ppt` 命令式、`outline` 声明式）
 - `market/index.json` — 静态市场清单
 - `market/apps/*.app.yaml` — M6 内置 AppManifest（`24os-appmanifest/1`）
@@ -45,11 +45,21 @@ npm run dist           # build + electron-builder --linux（产物 release/*.App
 
 ## 4. 硬性约定（务必遵守）
 
-- **验证命令固定为 `npm run check`**；提交前必须通过（当前 **352 个用例**）。
+- **验证命令固定为 `npm run check`**；提交前必须通过（当前 **509 个用例**：server 391 node +
+  web 110 jsdom + shared 8）。`npm run check` = `typecheck` + `vitest run`，**一次同时跑两套环境**。
+- **web 测试约定**：`web/**/*.test.tsx` 顶部写 `/** @vitest-environment jsdom */`，并
+  `import "@testing-library/jest-dom/vitest"` + `afterEach(cleanup)`（vitest 未开 globals，
+  RTL 不会自动清理）；`server/**` 保持 node 环境。网络/模型/WS 全部 mock，**不连真实后端、
+  不触碰 `~/.hermes`**。fixture 与假 Response 放 `web/test-utils.ts`。
+- **CI**：`.github/workflows/ci.yml` —— `check`（push main / PR / dispatch，node 20+22：
+  `npm ci` → `check` → `build`）与 `dist`（仅 dispatch 或 `v*` tag：`npm run dist`）。
 - **配置写入官方命令优先**（v3.0 §4.2）：模型 / MCP / env 先试 `hermes [-p <id>] config set|unset ...`
   （`shell:false`；`default` 不加 `-p`），成功返回 `via:"cli"`；CLI 不可用 / 失败才回退文件写
   （`via:"file"`）。避免与 Hermes 进程并发写 config.yaml。MCP 用 `config set/unset mcp_servers.<name>`
-  （官方 `mcp add` 交互 + discovery-first，不适合自动化）。description/tags 恒写工作台 `meta.json`。
+  （官方 `mcp add` 交互 + discovery-first，不适合自动化）。
+  **M9**：描述（SOUL）/ 短描述 / skill 启停走官方 **`profiles.configure` RPC**（`via:"rpc"`，
+  复用已连接的共享 gateway；不可用则回退 `SOUL.md` / `meta.json`）。`meta.json` 降级为「24H-OS
+  专有备注」（tags + 回退副本），见 `docs/PROFILE_ALIGN.md`。
 - **写操作四重保证**（配置编辑文件回退 / 生命周期）：
   1. `confirm:true` 门禁 —— 未带则 `CONFIRM_REQUIRED`，不触碰磁盘；
   2. 先备份到 `~/.24os/backups/`（每文件最多 10 份，超出删最旧）；
@@ -87,25 +97,34 @@ npm run dist           # build + electron-builder --linux（产物 release/*.App
   + `streamPrompt({model, force})` → `session.create.model` + 创建后经 config.set 走 selection guard，
   `confirm_required` → `session/model.confirm_required` 事件 + interrupted（**不静默放行**，
   前端 Modal 确认后带 `force:true` 重试 SSE）
-- `server/hermes/subagent.ts` — M5 subagent 契约研究结论（`getSubagentSupport`）+
-  `runSubagent`（spawn RPC 缺失 → 恒 `UNSUPPORTED`，绝不调模型）
+- `server/hermes/subagent.ts` — M5/M10 subagent：**无 spawn API**（子代理走会话内 `delegate_task`）；
+  观测/控制薄封装 `listSubagents`/`interruptSubagent`/`tailSubagent`/`steerSubagent`/`setSpawnPaused`
+  （风格对齐 `cron.ts`）+ `getSubagentSupport()`（`{spawnApi:false,controlApi:true,events:true,mechanism}`）+
+  `runSubagent` 恒 `SPAWN_UNSUPPORTED`（不造假）；末尾 `TODO(M10+: groups.*)`
 - `server/hermes/complete.ts` — 模型补全降级链 `completePrompt`（gateway → `hermes -z [-m model]` → stub）
 - `server/hermes/lifecycle.ts` — install/update/delete/backup
-- `server/hermes/configEdit.ts` — 模型 / 描述 / MCP / env / skill 启停的安全落盘（官方命令优先 + `via`）+ `readAgentMeta` / `listDisabledSkillNames`
+- `server/hermes/configEdit.ts` — 模型 / 描述（SOUL）/ MCP / env / skill 启停的安全落盘（官方优先 + `via`）+ `readAgentMeta` / `listDisabledSkillNames` / `readAgentDisabledSkills` / `readSoul`
+- `server/hermes/profileRpc.ts` — **M9 官方 Profile 薄封装**：`profiles.list/describe/configure/create/set_asset/get_asset` + 头像校验（PNG/JPEG ≤256KB）+ 结构化错误（`PROFILE_RPC_ERROR`/`PROFILE_NOT_FOUND`/`INVALID_ASSET`）；风格对齐 `cron.ts`
 - `server/appmanifest/` — AppManifest 解析校验（`manifest.ts`）、编排 install/update/uninstall/rollback（`apply.ts`）、事件总线（`events.ts`）、签名（`sign.ts`）、安装记录（`store.ts`，env 脱敏）
 - `server/hooks/` — M7 hooks 执行体（`executor.ts` 订阅 app 事件 / `runHook`）+ `outbound.ts` HMAC 签名推送
 - `server/dashboard/bus.ts` — M7 Dashboard 广播总线（`setBroadcast`/`broadcast` 单点注入）
-- `server/bot/` — M7 Bot Mode（`roster.ts` 解析 bots.yaml + `scheduler.ts` 30s tick，`OS_BOT_ENABLED` 默认关）
-- `server/routes/ws.ts` — M7 `GET /api/ws` Dashboard WebSocket（鉴权同安全基线，30s 心跳）
-- `server/skillui/` — Skill UI 发现（`discover.ts`，manifest/panel 判定）/ 声明式面板解析校验（`panel.ts`）/ 静态托管 / broker / 工具（`ppt.export`）/ 启停聚合判定（`disabled.ts`：`isSkillDisabled`，与 `GET /api/skill-uis` 的 `disabled` 同口径、每次读盘；broker invoke / panel / 静态三条路径强制 403 `SKILL_DISABLED`）
-- `server/routes/hermes.ts` — 状态/gateway 启停 + SSE `/api/hermes/chat/stream`（body：`chatId`/`model`/`force`，`interactive:true`）+ `POST /api/hermes/chat/decide` + `POST /api/hermes/subagent`（M5.3）
+- `server/hermes/cron.ts` — **M8 官方 Cron 薄封装**：`cron.manage` RPC（list/add/remove/pause/resume）+ `cron.changed` 事件订阅（失效缓存 + Dashboard WS 广播）+ 结构化错误（`CRON_UNAVAILABLE`/`CRON_RPC_ERROR`/`CRON_JOB_NOT_FOUND`）+ 写前备份 `~/.24os/backups/cron/`；`runCronJob` 走 CLI 兜底（`hermes cron run`，`stdio[0]="ignore"` + 超时）。**定时不在工作台实现，只让 `hermes serve` 带 `HERMES_DESKTOP=1` 触发官方 ticker**（`gateway.ts#resolveGatewayEnv`，`OS_CRON_TICKER=0` 关闭）
+- `server/routes/cron.ts` — M8 `GET /api/cron/jobs` + `POST /api/cron/jobs`(confirm) + `POST /api/cron/jobs/:name/pause|resume|remove|run`(confirm)；`/api/bots` 与 `bots.yaml` 已废弃
+- `server/routes/agents.ts` — agent 列表/详情/生命周期/配置编辑；M9 头像 `GET/POST /api/agents/:id/avatar`（confirm + ≤256KB PNG/JPEG）+ 描述/skill 启停对齐官方
+- `server/routes/ws.ts` — M7 `GET /api/ws` Dashboard WebSocket（鉴权同安全基线，30s 心跳，广播 `cron.changed` 等）
+- `server/skillui/` — Skill UI 发现（`discover.ts`，manifest/panel 判定）/ 声明式面板解析校验（`panel.ts`）/ 静态托管 / broker / 工具（`ppt.export`）/ 启停聚合判定（`disabled.ts`：`isSkillDisabled`，官方 `config.yaml skills.disabled` 优先、meta 回退，与 `GET /api/skill-uis` 的 `disabled` 同口径、每次读盘；broker invoke / panel / 静态三条路径强制 403 `SKILL_DISABLED`）
+- `server/routes/hermes.ts` — 状态/gateway 启停 + SSE `/api/hermes/chat/stream`（body：`chatId`/`model`/`force`，`interactive:true`）+ `POST /api/hermes/chat/decide` + subagent 观测/控制（M10：`GET /api/hermes/subagents` + `GET /:id/tail` + `POST /:id/interrupt`(confirm) + `POST /:id/steer` + `POST /pause`(confirm)；旧 `POST /api/hermes/subagent` → 501 `SPAWN_UNSUPPORTED`）
 - `server/paths.ts` — `APP_ROOT` 统一解析（源码 `server/` 与打包 `dist/server.cjs` 同语义，勿各自推算层级）
 - `scripts/build-server.mjs` — esbuild 打包 server → `dist/server.cjs`（`platform:node`/`format:cjs`/`bundle`；全量内联，失败回退 `packages:"external"`）
 - `server/staticWeb.ts` — M2 外壳：`dist/web` 生产静态托管 + SPA fallback + 防穿越 + 回环 token 豁免（`shouldBypassWebToken`）
 - `electron/main.cjs` / `electron/preload.cjs` — Electron 主进程（复用/拉起 server；**有 `dist/server.cjs` 时优先用系统 node spawn 该产物，否则回退 tsx**；打包态经 `asarUnpack` 解包，用 `app.getAppPath()` 判定并映射 `app.asar` → `app.asar.unpacked` 解析入口/`cwd`/`OS_WEB_DIST`；`market/**`/`examples/skills/**` 亦解包至同一根，由 `APP_ROOT` 命中、**无需额外 env**；headless 退出 0、安全默认）+ 最小 preload（仅 `{ platform }`）
 - `web/components/SkillHost.tsx` — 命令式 Skill UI 宿主 + RPC broker + 调试面板 + 审批/澄清卡片 + 模型下拉 + 昂贵模型确认 Modal（force 重试）
 - `web/components/DeclarativePanel.tsx` — 声明式面板渲染（表单 / 模板 / 预览 / SSE + 审批/澄清卡片 + 模型下拉 + 昂贵模型确认 Modal）
+- `web/components/CronPanel.tsx` — M8 定时任务视图（读官方 cron jobs：schedule/next_run_at/last_status/enabled + pause/resume/run-now/remove + 新增表单；展示官方 ticker 状态）
 - `shared/types.ts` / `shared/panel.ts` — 共享类型与 `{{key}}` 插值工具（改 API 先改这里）
+- `web/test-utils.ts` — 前端单测 fixture + 假 JSON/SSE Response（不连网络）
+- `web/**/*.test.{ts,tsx}` — jsdom 前端单测（api / 组件 / 页面 / App）；`shared/panel.test.ts` 补插值边界
+- `.github/workflows/ci.yml` — CI：`check`（node 20/22，`npm ci`+`check`+`build`）+ `dist`（dispatch / `v*` tag）
 
 ## 7. 环境变量
 
@@ -126,19 +145,19 @@ npm run dist           # build + electron-builder --linux（产物 release/*.App
 | `OS_MARKET_FILE` | 市场清单路径 | `market/index.json` |
 | `OS_MARKET_APPS_DIR` | builtin AppManifest 目录 | `market/apps` |
 | `OS_APPS_DIR` | App 安装记录根 | `~/.24os/apps` |
-| `OS_BOT_ENABLED` | 设为 `1` 时启动自动 `startScheduler`（Bot Mode） | 关（默认不调模型） |
-| `OS_BOTS_FILE` | Bot 花名册路径 | `~/.24os/bots.yaml` |
+| `OS_CRON_TICKER` | 设为 `0` 关闭「让 `hermes serve` 带 `HERMES_DESKTOP=1` 触发官方 cron ticker」 | 开 |
+| `OS_CRON_CACHE_TTL_MS` | 官方 cron jobs 列表缓存 TTL | `2000` |
 | `OS_WEB_DIST` | 生产静态托管产物根（显式覆盖，无效则不启用） | 自动探测 `dist/web` → `web/dist` |
 | `HERMES_HOME` / `OS_HERMES_HOME` | Hermes 主目录 | `~/.hermes` |
 
 ## 8. 当前状态与路线图
 
-已完成：**M1**（只读骨架）、**M1.1**（加固）、**M4**（Skill UI 宿主 + PPT demo）、**M4.1**（声明式 `ui/panel.yaml` 面板 + `outline` demo，零代码 / 无任意 JS，与命令式并存）、**M2-core**（生命周期 + 市场）、**M3**（配置编辑落盘）、**M5.0**（CLI/多 home 探测）、**M5.1**（TUI gateway + `callModel` 降级链，走 `llm.oneshot`）、**M5.x**（配置写入官方命令优先 + `via`；`resolveCliHome` 统一 home）、**M5.0b**（skillui 发现统一到 `activeHome`）、**M5.2**（`session.create`/`prompt.submit`/`session.interrupt`/`session.close` + 流式事件归一化 + SSE `/api/hermes/chat/stream` + 审批安全默认 + Skill UI `chatStream`）、**M5.3**（交互式审批/clarify：`chatId` + `decideApproval` + `POST /api/hermes/chat/decide` + 前端决策卡片 + 超时/流结束安全兜底；模型：`streamPrompt({model})` + `switchSessionModel`（`config.set model` 热切）+ SSE `model?` + 前端模型下拉 + `hermes -z -m`；subagent：契约研究结论——观测/控制存在、spawn RPC 不存在 → `runSubagent` 恒 `UNSUPPORTED` + `POST /api/hermes/subagent` 501，不造假）、**M6**（AppManifest `24os-appmanifest/1`：解析校验 + install/update/uninstall/rollback 编排 + `market/apps` + `/api/market*` 合并与 apply + 签名 + 事件总线 + `apps/<id>.json` 脱敏存储）、**M7**（hooks 执行体 + outbound HMAC 签名推送 + Dashboard WS `/api/ws` + Bot Mode 默认关 + 前端状态抽屉）、**M2 外壳**（`electron/main.cjs` + `preload.cjs`：复用/拉起 server、生产静态托管 `server/staticWeb.ts`、headless 退出 0；**M2 打包**：`scripts/build-server.mjs` → `dist/server.cjs` + electron-builder `npm run dist`，`asarUnpack` 解包 `dist/server.cjs`/`dist/web/**` + `main.cjs` 打包态路径映射）、**M2 杂项**（detect 对齐：`OS_HERMES_CLI` 显式无效不回退 / home 显式 env 无效即停；Skill 启停落盘 `POST /api/agents/:id/skills` + `skill-uis.disabled`；`invalidateAgentsCache` 写后失效；`GET /api/agents` 列表/详情合并 meta description/tags/skills）。
+已完成：**M1**（只读骨架）、**M1.1**（加固）、**M4**（Skill UI 宿主 + PPT demo）、**M4.1**（声明式 `ui/panel.yaml` 面板 + `outline` demo，零代码 / 无任意 JS，与命令式并存）、**M2-core**（生命周期 + 市场）、**M3**（配置编辑落盘）、**M5.0**（CLI/多 home 探测）、**M5.1**（TUI gateway + `callModel` 降级链，走 `llm.oneshot`）、**M5.x**（配置写入官方命令优先 + `via`；`resolveCliHome` 统一 home）、**M5.0b**（skillui 发现统一到 `activeHome`）、**M5.2**（`session.create`/`prompt.submit`/`session.interrupt`/`session.close` + 流式事件归一化 + SSE `/api/hermes/chat/stream` + 审批安全默认 + Skill UI `chatStream`）、**M5.3**（交互式审批/clarify：`chatId` + `decideApproval` + `POST /api/hermes/chat/decide` + 前端决策卡片 + 超时/流结束安全兜底；模型：`streamPrompt({model})` + `switchSessionModel`（`config.set model` 热切）+ SSE `model?` + 前端模型下拉 + `hermes -z -m`；subagent：观测/控制存在、spawn RPC 不存在——工作台化见 M10）、**M6**（AppManifest `24os-appmanifest/1`：解析校验 + install/update/uninstall/rollback 编排 + `market/apps` + `/api/market*` 合并与 apply + 签名 + 事件总线 + `apps/<id>.json` 脱敏存储）、**M7**（hooks 执行体 + outbound HMAC 签名推送 + Dashboard WS `/api/ws` + 前端状态抽屉）、**M8**（**定时 = 官方 Hermes Cron**：`server/hermes/cron.ts` 薄封装 `cron.manage` RPC + `cron.changed` 事件 + `server/routes/cron.ts`（confirm 门禁）+ `web/components/CronPanel.tsx`；自研 `bots.yaml`/30s 调度器**已删除**；官方 ticker 由 `HERMES_DESKTOP=1` 的 `hermes serve` 触发，`OS_CRON_TICKER=0` 关闭）、**M9**（**Bot=Profile 对齐官方**：`server/hermes/profileRpc.ts` 薄封装 `profiles.list/describe/configure/create/set_asset/get_asset` + 结构化错误；描述/persona 读写对齐 `SOUL.md`（官方 `profiles.configure{soul}` 优先、`via:"rpc"`；RPC 不可用回退文件写）；skill 启停走官方 `disabled_skills`（`config.yaml skills.disabled` 优先、meta 回退）；头像 `GET/POST /api/agents/:id/avatar`（confirm + PNG/JPEG ≤256KB）；`meta.json` 降级为「24H-OS 专有备注」，见 `docs/PROFILE_ALIGN.md`）、**M2 外壳**（`electron/main.cjs` + `preload.cjs`：复用/拉起 server、生产静态托管 `server/staticWeb.ts`、headless 退出 0；**M2 打包**：`scripts/build-server.mjs` → `dist/server.cjs` + electron-builder `npm run dist`，`asarUnpack` 解包 `dist/server.cjs`/`dist/web/**` + `main.cjs` 打包态路径映射）、**M2 杂项**（detect 对齐：`OS_HERMES_CLI` 显式无效不回退 / home 显式 env 无效即停；Skill 启停落盘 `POST /api/agents/:id/skills` + `skill-uis.disabled`；`invalidateAgentsCache` 写后失效；`GET /api/agents` 列表/详情合并 meta description/tags/skills）、**M10**（**subagent 观测/控制 + 事件透出**：`server/hermes/subagent.ts` 薄封装 `subagent.list/tail/interrupt/steer`、`delegation.pause`（风格对齐 `cron.ts`）+ `GET /api/hermes/subagents` + `/subagents/:id/{tail,interrupt,steer}` + `/subagents/pause`；`chat.ts` 把 `subagent.*` 归一化为 `type:"subagent"`（phase `spawn_requested/start/progress/thinking/tool/complete`，未知→`unknown`）并 SSE 透出；`getSubagentSupport()` → `{spawnApi:false,controlApi:true,events:true,mechanism:"delegate_task (in-session tool)"}`；旧 `POST /api/hermes/subagent` → 501 `SPAWN_UNSUPPORTED`。**通道对齐**：`docs/CHANNELS.md`（实测 `hermes gateway run` 无 token 退化为 "No messaging platforms enabled" 且保持运行；`hermes serve` 不启动平台适配器；投递推荐官方 `cron --deliver`；`hooks.outbound` 定位第三方回调扩展）。**Group Chat 不做**（属官方 Desktop，留 `TODO(M10+: groups.*)`））、**测试加固**（web vitest jsdom 110 例 + shared 8 例 → 全量 **509**；`.github/workflows/ci.yml` 的 `check`(node 20/22) + `dist`(dispatch/tag)）。
 
 待办：
 
 - **M5 剩余**：`session.resume`/`session.list` 等会话浏览、subagent **spawn**（官方契约待暴露；
-  当前仅有观测/控制面，见 `server/hermes/subagent.ts` 研究结论）、模型热切对**已流式中**
+  当前仅有观测/控制面 + 事件透出，见 `server/hermes/subagent.ts` 与 `docs/CHANNELS.md`）、模型热切对**已流式中**
   会话为 `deferred`（下一 turn 生效，契约行为）。
   昂贵模型 `confirm_expensive_model` 交互确认 ✅ 已完成（`switchSessionModel({force})` +
   `session/model.confirm_required` 事件 + SSE `force` + 前端 Modal，`OS_GATEWAY_AUTO_APPROVE=1` 自动 force）。
@@ -147,6 +166,8 @@ npm run dist           # build + electron-builder --linux（产物 release/*.App
 - ~~**M2 打包修复**：`dist/server.cjs` 在 asar 内无法被系统 node 读取 → `asarUnpack: ["dist/server.cjs","dist/web/**"]` + `electron/main.cjs` 打包态 `app.asar` → `app.asar.unpacked` 路径映射（`app.getAppPath()` 判定，不硬编码）；打包态 headless 首启实测 200/exit 0~~ ✅ 已完成。
 - ~~**M2 打包内容修复**：`files` 补齐 `market/**`、`examples/skills/**` 并同步进 `asarUnpack`。打包后 `server.cjs` 解包于 `app.asar.unpacked/dist/` → `server/paths.ts#APP_ROOT` 自然解析到 `app.asar.unpacked/`，`market/index.json`、`market/apps/*.app.yaml`、`examples/skills/**` 随之被 `readFileSync`/`readdirSync` 命中（系统 node 不认 asar，故必须解包）。**无需传额外 env**（`OS_MARKET_FILE`/`OS_MARKET_APPS_DIR`/`OS_SKILL_ROOTS` 的默认值均基于 APP_ROOT；显式设置的用户 env 不覆盖）。打包态 headless 冒烟：`/api/market` 5 条（含 `ppt-maker`）、`/api/skill-uis` 含 `ppt`+`outline`、exit 0、无残留~~ ✅ 已完成。
 - 其他：`runTool` 仅白名单 `ppt.export`；权限提示目前自动放行（未接交互式授权）。
+- **M8 风险**：`deliver` 指向 telegram/discord 等平台通道时，无头环境未配 token → 官方投递会记 `last_delivery_error`（任务本身仍执行）；无头建议 `deliver:"local"`。官方 `cron.manage` 触发依赖 gateway（`hermes serve`）在跑——工作台首次访问 cron API / chat 时才惰性拉起共享 gateway。
+- **通道 / Group Chat（M10 决策）**：平台适配器由独立 `hermes gateway` 进程持有（`hermes serve` **不**启用平台；实测无 token 时 `gateway run` 退化 `No messaging platforms enabled` 并保持运行）；Bot 投递推荐官方 `cron --deliver <platform:chat_id|bot-chat[:profile]>`，自研 `hooks.outbound` 仅作第三方 HTTP 回调扩展；**Group Chat 不做**（官方 Desktop 主战场，入口 `groups.*` + `bot_relay.*`），详见 `docs/CHANNELS.md` 与 `TODO(M10+: groups.*)`。
 
 ## 9. 提交约定
 

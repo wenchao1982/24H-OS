@@ -1,11 +1,16 @@
 import type {
   AddMcpServerRequest,
   Agent,
+  AgentAvatar,
+  AgentAvatarUploadResult,
   AgentConfig,
   AgentsResponse,
   ChatDecideRequest,
   ChatDecideResult,
   ConfigEditResult,
+  CronActionResult,
+  CronJobAddRequest,
+  CronJobsResponse,
   DeleteAgentRequest,
   HermesStatus,
   InstallAgentRequest,
@@ -262,7 +267,7 @@ export function restoreAgentConfigBackup(
   );
 }
 
-/** POST /api/agents/:id/skills —— skill 启停落盘（meta.json）。 */
+/** POST /api/agents/:id/skills —— skill 启停落盘（官方 disabled_skills 优先，meta 回退）。 */
 export function setSkillEnabled(
   id: string,
   body: { name: string; enabled: boolean; confirm?: boolean },
@@ -271,4 +276,79 @@ export function setSkillEnabled(
     method: "POST",
     body: JSON.stringify(body),
   });
+}
+
+/* ------------------------------------------------------------------ *
+ * M9 · 官方 Profile 对齐（头像）
+ * ------------------------------------------------------------------ */
+
+/** GET /api/agents/:id/avatar —— 读取头像（官方 profiles.get_asset）。 */
+export function fetchAgentAvatar(id: string): Promise<AgentAvatar> {
+  return request<AgentAvatar>(`/api/agents/${encodeURIComponent(id)}/avatar`);
+}
+
+/** POST /api/agents/:id/avatar —— 上传头像（confirm 门禁，PNG/JPEG ≤256KB）。 */
+export function uploadAgentAvatar(
+  id: string,
+  data: string,
+): Promise<AgentAvatarUploadResult> {
+  return request<AgentAvatarUploadResult>(
+    `/api/agents/${encodeURIComponent(id)}/avatar`,
+    { method: "POST", body: JSON.stringify({ data, confirm: true }) },
+  );
+}
+
+/* ------------------------------------------------------------------ *
+ * M8 · 官方 Cron（定时任务）
+ * 定时完全由 Hermes 官方 cron 负责；这里只是薄封装（列表 + 操作）。
+ * 写操作（add/pause/resume/remove/run）一律带 confirm:true。
+ * ------------------------------------------------------------------ */
+
+/** GET /api/cron/jobs —— 官方定时任务列表（默认不含暂停项）。 */
+export function fetchCronJobs(
+  options: { includeDisabled?: boolean; profile?: string } = {},
+): Promise<CronJobsResponse> {
+  const params = new URLSearchParams();
+  if (options.includeDisabled) params.set("include_disabled", "1");
+  if (options.profile) params.set("profile", options.profile);
+  const qs = params.toString();
+  return request<CronJobsResponse>(`/api/cron/jobs${qs ? `?${qs}` : ""}`);
+}
+
+/** POST /api/cron/jobs —— 新增任务（confirm 门禁）。 */
+export function addCronJob(body: CronJobAddRequest): Promise<CronActionResult> {
+  return request<CronActionResult>("/api/cron/jobs", {
+    method: "POST",
+    body: JSON.stringify({ ...body, confirm: true }),
+  });
+}
+
+function cronAction(
+  name: string,
+  action: "pause" | "resume" | "remove" | "run",
+): Promise<CronActionResult> {
+  return request<CronActionResult>(
+    `/api/cron/jobs/${encodeURIComponent(name)}/${action}`,
+    { method: "POST", body: JSON.stringify({ confirm: true }) },
+  );
+}
+
+/** POST /api/cron/jobs/:name/pause */
+export function pauseCronJob(name: string): Promise<CronActionResult> {
+  return cronAction(name, "pause");
+}
+
+/** POST /api/cron/jobs/:name/resume */
+export function resumeCronJob(name: string): Promise<CronActionResult> {
+  return cronAction(name, "resume");
+}
+
+/** POST /api/cron/jobs/:name/remove */
+export function removeCronJob(name: string): Promise<CronActionResult> {
+  return cronAction(name, "remove");
+}
+
+/** POST /api/cron/jobs/:name/run —— 立即运行一次（CLI 兜底）。 */
+export function runCronJob(name: string): Promise<CronActionResult> {
+  return cronAction(name, "run");
 }

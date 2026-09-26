@@ -5,6 +5,7 @@ import {
   GatewayClient,
   parseBackendReadyLine,
   parseSessionToken,
+  resolveGatewayEnv,
   type GatewayServerRequest,
 } from "./gateway";
 
@@ -145,6 +146,29 @@ describe("parseSessionToken", () => {
 
   it("无 token → null", () => {
     expect(parseSessionToken("<html></html>")).toBeNull();
+  });
+});
+
+describe("resolveGatewayEnv（M8 官方 cron ticker）", () => {
+  it("默认注入 HERMES_DESKTOP=1", () => {
+    expect(resolveGatewayEnv({ PATH: "/bin" })).toMatchObject({
+      PATH: "/bin",
+      HERMES_DESKTOP: "1",
+    });
+  });
+
+  it("OS_CRON_TICKER=0 时不注入", () => {
+    const env = resolveGatewayEnv({ OS_CRON_TICKER: "0" });
+    expect(env.HERMES_DESKTOP).toBeUndefined();
+  });
+
+  it("desktopTicker 显式 false 覆盖默认", () => {
+    expect(resolveGatewayEnv({}, false).HERMES_DESKTOP).toBeUndefined();
+  });
+
+  it("已显式给出 HERMES_DESKTOP 时尊重原值", () => {
+    expect(resolveGatewayEnv({ HERMES_DESKTOP: "0" }).HERMES_DESKTOP).toBe("0");
+    expect(resolveGatewayEnv({ HERMES_DESKTOP: "1" }).HERMES_DESKTOP).toBe("1");
   });
 });
 

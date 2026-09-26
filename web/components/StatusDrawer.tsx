@@ -26,7 +26,9 @@ function summarize(event: DashboardEvent): string {
   for (const key of [
     "id",
     "appId",
-    "botId",
+    "jobId",
+    "name",
+    "source",
     "skillId",
     "profile",
     "mode",

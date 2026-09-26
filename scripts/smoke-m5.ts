@@ -133,26 +133,38 @@ async function main(): Promise<void> {
     ok("decide 未知 chat → 404 CHAT_NOT_FOUND", res.status === 404 && body.error === "CHAT_NOT_FOUND", `status=${res.status}`);
   }
 
-  // 3) subagent 门禁 + unsupported
+  // 3) subagent 观测/控制语义（M10）
   {
-    const res1 = await fetch(`${base}/api/hermes/subagent`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt: "干活" }),
-    });
-    const b1 = (await res1.json()) as { error?: string };
-    ok("subagent 缺 confirm → 400", res1.status === 400 && b1.error === "CONFIRM_REQUIRED", `status=${res1.status}`);
+    const res1 = await fetch(`${base}/api/hermes/subagents`);
+    const b1 = (await res1.json()) as { count?: number; support?: { spawnApi?: boolean } };
+    ok(
+      "subagents 无 sessionId → 200 空列表 + spawnApi:false",
+      res1.status === 200 && b1.count === 0 && b1.support?.spawnApi === false,
+      `status=${res1.status}`,
+    );
 
     const res2 = await fetch(`${base}/api/hermes/subagent`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt: "干活", confirm: true }),
+      body: JSON.stringify({ prompt: "干活" }),
     });
-    const b2 = (await res2.json()) as { code?: string; contract?: { spawnSupported?: boolean } };
+    const b2 = (await res2.json()) as { code?: string; contract?: { spawnApi?: boolean } };
     ok(
-      "subagent confirm → 501 UNSUPPORTED + 契约",
-      res2.status === 501 && b2.code === "UNSUPPORTED" && b2.contract?.spawnSupported === false,
+      "subagent spawn → 501 SPAWN_UNSUPPORTED + 契约",
+      res2.status === 501 && b2.code === "SPAWN_UNSUPPORTED" && b2.contract?.spawnApi === false,
       `status=${res2.status}`,
+    );
+
+    const res3 = await fetch(`${base}/api/hermes/subagents/pause`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ paused: true }),
+    });
+    const b3 = (await res3.json()) as { error?: string };
+    ok(
+      "pause 缺 confirm → 400 CONFIRM_REQUIRED",
+      res3.status === 400 && b3.error === "CONFIRM_REQUIRED",
+      `status=${res3.status}`,
     );
   }
 

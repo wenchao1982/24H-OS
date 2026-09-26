@@ -18,10 +18,13 @@ import {
   backupFile,
   listDisabledSkillNames,
   readAgentConfig,
+  readAgentDisabledSkills,
   readAgentMeta,
+  readSoul,
   removeEnvVar,
   removeMcpServer,
   resolveAgentDir,
+  resolveSoulPath,
   restoreBackup,
   setEnvVar,
   setSkillEnabled,
@@ -29,6 +32,7 @@ import {
   updateMcpServer,
 } from "./configEdit";
 import type { ConfigEditDeps } from "./configEdit";
+import type { ProfileRpcClient } from "./profileRpc";
 import { makeFakeHermesCli } from "../testUtils/fakeHermesCli";
 
 /**
@@ -663,5 +667,155 @@ describe("路径安全", () => {
     for (const bad of ["../evil", "a/b", "a\\b", "..", "UPPER"]) {
       expect(() => resolveAgentDir(bad, fx.deps)).toThrow();
     }
+  });
+});
+
+describe("M9 官方 Profile 对齐（soul / description / disabled_skills）", () => {
+  function makeFakeProfileRpc(
+    impl: (method: string, params: Record<string, unknown>) => unknown,
+  ): { client: ProfileRpcClient; calls: Array<{ method: string; params: Record<string, unknown> }> } {
+    const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
+    const client: ProfileRpcClient = {
+      async call<T = unknown>(
+        method: string,
+        params: Record<string, unknown> = {},
+      ): Promise<T> {
+        calls.push({ method, params });
+        const result = impl(method, params);
+        if (result instanceof Error) throw result;
+        return result as T;
+      },
+    };
+    return { client, calls };
+  }
+
+  it("soul：RPC 可用 → profiles.configure{soul}，via:rpc，不写文件", async () => {
+    const fx = setupFixture({ "config.yaml": CONFIG_WITH_COMMENTS });
+    const rpc = makeFakeProfileRpc(() => ({ ok: true, applied: { soul: true } }));
+    const result = await updateAgentConfig(
+      fx.id,
+      { soul: "You are careful.", confirm: true },
+      { ...fx.deps, rpc: { client: rpc.client } },
+    );
+    expect(rpc.calls[0]).toMatchObject({
+      method: "profiles.configure",
+      params: { name: fx.id, soul: "You are careful." },
+    });
+    expect(result.via).toBe("rpc");
+    expect(result.files).toEqual([]);
+    expect(existsSync(resolveSoulPath(fx.id, fx.deps))).toBe(false);
+  });
+
+  it("description：RPC 可用 → profiles.configure{description}，不写 meta", async () => {
+    const fx = setupFixture({ "config.yaml": CONFIG_WITH_COMMENTS });
+    const rpc = makeFakeProfileRpc(() => ({
+      ok: true,
+      applied: { description: true },
+    }));
+    const result = await updateAgentConfig(
+      fx.id,
+      { description: "短描述", confirm: true },
+      { ...fx.deps, rpc: { client: rpc.client } },
+    );
+    expect(rpc.calls[0].params).toMatchObject({
+      name: fx.id,
+      description: "短描述",
+    });
+    expect(result.via).toBe("rpc");
+    expect(existsSync(path.join(fx.metaDir, fx.id, "meta.json"))).toBe(false);
+  });
+
+  it("RPC 失败 → 回退：soul 写 SOUL.md、description 写 meta，via:file", async () => {
+    const fx = setupFixture({ "config.yaml": CONFIG_WITH_COMMENTS });
+    const rpc = makeFakeProfileRpc(() => new Error("gateway down"));
+    const result = await updateAgentConfig(
+      fx.id,
+      { soul: "persona", description: "d", confirm: true },
+      { ...fx.deps, rpc: { client: rpc.client } },
+    );
+    expect(result.via).toBe("file");
+    const soulPath = resolveSoulPath(fx.id, fx.deps);
+    expect(readFileSync(soulPath, "utf8")).toBe("persona");
+    const meta = JSON.parse(
+      readFileSync(path.join(fx.metaDir, fx.id, "meta.json"), "utf8"),
+    ) as { description?: string };
+    expect(meta.description).toBe("d");
+    expect(result.files).toEqual(
+      expect.arrayContaining([soulPath, path.join(fx.metaDir, fx.id, "meta.json")]),
+    );
+  });
+
+  it("readSoul / readAgentConfig.soul：读取 SOUL.md", async () => {
+    const fx = setupFixture({
+      "config.yaml": CONFIG_WITH_COMMENTS,
+      "SOUL.md": "# 标题\n\n我是人设正文。\n",
+    });
+    expect(await readSoul(fx.id, fx.deps)).toContain("我是人设正文");
+    const config = await readAgentConfig(fx.id, fx.deps);
+    expect(config.soul).toContain("我是人设正文");
+    // 无官方 description、无 meta → description 取 SOUL 摘要。
+    expect(config.description).toBe("我是人设正文。");
+  });
+
+  it("setSkillEnabled：RPC 可用 → profiles.configure{disabled_skills}，via:rpc，不写 meta", async () => {
+    const fx = setupFixture({ "config.yaml": CONFIG_WITH_COMMENTS });
+    mkdirSync(path.join(fx.profileDir, "skills", "alpha"), { recursive: true });
+    writeFileSync(path.join(fx.profileDir, "skills", "alpha", "SKILL.md"), "# a\n", "utf8");
+    const rpc = makeFakeProfileRpc(() => ({ ok: true, applied: { skills: true } }));
+    const result = await setSkillEnabled(
+      fx.id,
+      { name: "alpha", enabled: false, confirm: true },
+      { ...fx.deps, rpc: { client: rpc.client } },
+    );
+    expect(result.via).toBe("rpc");
+    expect(rpc.calls[0]).toMatchObject({
+      method: "profiles.configure",
+      params: { name: fx.id, disabled_skills: ["alpha"] },
+    });
+    expect(existsSync(path.join(fx.metaDir, fx.id, "meta.json"))).toBe(false);
+  });
+
+  it("readAgentDisabledSkills：官方 skills.disabled 优先，meta 忽略；无官方时回退 meta", async () => {
+    const fx = setupFixture({
+      "config.yaml": "model: m\nskills:\n  disabled:\n    - Alpha\n",
+    });
+    const off = await readAgentDisabledSkills(fx.id, fx.deps);
+    expect(off.official).not.toBeNull();
+    expect(off.disabled.has("alpha")).toBe(true);
+
+    mkdirSync(path.join(fx.metaDir, fx.id), { recursive: true });
+    writeFileSync(
+      path.join(fx.metaDir, fx.id, "meta.json"),
+      JSON.stringify({ skills: { beta: { enabled: false } } }),
+      "utf8",
+    );
+    const off2 = await readAgentDisabledSkills(fx.id, fx.deps);
+    expect(off2.disabled.has("beta")).toBe(false);
+
+    const fx2 = setupFixture({ "config.yaml": "model: m\n" });
+    mkdirSync(path.join(fx2.metaDir, fx2.id), { recursive: true });
+    writeFileSync(
+      path.join(fx2.metaDir, fx2.id, "meta.json"),
+      JSON.stringify({ skills: { gamma: { enabled: false } } }),
+      "utf8",
+    );
+    const fallback = await readAgentDisabledSkills(fx2.id, fx2.deps);
+    expect(fallback.official).toBeNull();
+    expect(fallback.disabled.has("gamma")).toBe(true);
+  });
+
+  it("listDisabledSkillNames：官方 skills.disabled 优先，官方 agent 的 meta 忽略", async () => {
+    const fx = setupFixture({
+      "config.yaml": "model: m\nskills:\n  disabled:\n    - alpha\n",
+    });
+    mkdirSync(path.join(fx.metaDir, fx.id), { recursive: true });
+    writeFileSync(
+      path.join(fx.metaDir, fx.id, "meta.json"),
+      JSON.stringify({ skills: { beta: { enabled: false } } }),
+      "utf8",
+    );
+    const disabled = await listDisabledSkillNames(fx.deps);
+    expect(disabled.has("alpha")).toBe(true);
+    expect(disabled.has("beta")).toBe(false);
   });
 });

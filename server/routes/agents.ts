@@ -3,6 +3,9 @@ import type { FastifyInstance, FastifyReply } from "fastify";
 import type {
   AddMcpServerRequest,
   Agent,
+  AgentAvatar,
+  AgentAvatarUploadRequest,
+  AgentAvatarUploadResult,
   AgentConfig,
   AgentsResponse,
   ApiError,
@@ -28,13 +31,15 @@ import { getSnapshot, refreshSnapshot } from "../hermes";
 import {
   addMcpServer,
   readAgentConfig,
+  readAgentDisabledSkills,
   readAgentMeta,
+  readOfficialDescriptionFromDir,
+  readSoulFromDir,
   removeEnvVar,
   removeMcpServer,
   restoreBackup,
   setEnvVar,
   setSkillEnabled,
-  skillMetaEnabled,
   updateAgentConfig,
   updateMcpServer,
 } from "../hermes/configEdit";
@@ -45,7 +50,13 @@ import {
   installAgent,
   updateAgent,
 } from "../hermes/lifecycle";
+import {
+  getProfileAsset,
+  setProfileAsset,
+  validateAvatarData,
+} from "../hermes/profileRpc";
 import { readMarket, readMarketAppManifest } from "../market";
+import { extractDescription } from "../hermes/profiles";
 import { buildSkillUiIndex } from "../skillui/discover";
 
 /**
@@ -54,24 +65,38 @@ import { buildSkillUiIndex } from "../skillui/discover";
  *
  * M4：给每个 skill 富化 hasUi / uiId（若发现对应 ui/manifest.json）。
  * M2-core：新增生命周期（install / update / delete / backup）与 /api/market。
- * M2 杂项：列表/详情合并 meta.json 的 description/tags/skills 启停；
+ * M2 杂项：列表/详情合并 description/tags/skills 启停；
  *          POST /api/agents/:id/skills 启停落盘。
+ * M9：描述/persona 对齐官方（官方 profile.yaml description → SOUL.md 摘要 → meta → config 派生）；
+ *      skill 启停官方优先（`config.yaml skills.disabled`），meta.json 仅回退；
+ *      头像转发官方 `profiles.get_asset` / `profiles.set_asset`。
  */
+
+/** 可注入依赖（测试；默认走真实 profileRpc）。 */
+export interface AgentRouteDeps {
+  profileRpc?: {
+    getAsset?: typeof getProfileAsset;
+    setAsset?: typeof setProfileAsset;
+    validateAvatar?: typeof validateAvatarData;
+  };
+}
 
 /** 单次请求内复用的 UI 索引，避免逐 skill 重复扫描磁盘。 */
 function enrichAgentSkills(
   agent: Agent,
   index: Map<string, string>,
-  metaSkills: Record<string, unknown>,
+  disabled: Set<string>,
 ): Agent {
   return {
     ...agent,
     skills: agent.skills.map((skill) => {
-      const enabled = skillMetaEnabled(metaSkills, skill);
-      const base: Skill =
-        enabled === undefined
-          ? { ...skill, enabled: skill.enabled ?? true }
-          : { ...skill, enabled };
+      const keys = [skill.id, skill.name, skill.path ? path.basename(skill.path) : ""]
+        .filter((key) => key.length > 0)
+        .map((key) => key.toLowerCase());
+      const isDisabled = keys.some((key) => disabled.has(key));
+      const base: Skill = isDisabled
+        ? { ...skill, enabled: false }
+        : { ...skill, enabled: skill.enabled ?? true };
       const uiId = lookupUiId(base, index);
       return uiId ? { ...base, hasUi: true, uiId } : base;
     }),
@@ -79,10 +104,27 @@ function enrichAgentSkills(
 }
 
 /**
- * 合并工作台 meta.json 到 agent（列表与详情共用，优先级一致）：
- *   - description：meta 非空字符串覆盖 config 内描述；无 meta / 空串保持现状；
- *   - tags：meta.tags 存在（数组）则采用；无 meta 时缺省（config 本身无 tags）；
- *   - skills[].enabled：meta.skills.<name>.enabled 覆盖；无记录默认 true。
+ * 解析 agent 展示描述（M9 优先级）：
+ *   官方 `profile.yaml` description → 官方 SOUL.md 摘要 → 工作台 meta.json → config 派生。
+ */
+async function resolveAgentDescription(
+  agent: Agent,
+  metaDescription: string,
+): Promise<string> {
+  const official = await readOfficialDescriptionFromDir(agent.path).catch(() => "");
+  if (official) return official;
+  const soul = await readSoulFromDir(agent.path).catch(() => "");
+  const summary = soul.trim() ? extractDescription(soul) : "";
+  if (summary) return summary;
+  if (metaDescription) return metaDescription;
+  return agent.description;
+}
+
+/**
+ * 合并工作台 meta.json + 官方启停状态到 agent（列表与详情共用，优先级一致）：
+ *   - description：官方 description → SOUL 摘要 → meta → config 内描述；
+ *   - tags：meta.tags 存在（数组）则采用；无 meta 时缺省；
+ *   - skills[].enabled：官方 config.yaml skills.disabled 优先，meta 回退；无记录默认 true。
  */
 async function enrichAgent(
   agent: Agent,
@@ -92,17 +134,18 @@ async function enrichAgent(
   const metaDescription =
     typeof meta.description === "string" && meta.description.length > 0
       ? meta.description
-      : agent.description;
+      : "";
   const tags = Array.isArray(meta.tags)
     ? meta.tags.filter((tag): tag is string => typeof tag === "string")
     : undefined;
-  const metaSkills =
-    meta.skills && typeof meta.skills === "object" && !Array.isArray(meta.skills)
-      ? (meta.skills as Record<string, unknown>)
-      : {};
+  const { disabled } = await readAgentDisabledSkills(agent.id).catch(() => ({
+    official: null,
+    disabled: new Set<string>(),
+  }));
+  const description = await resolveAgentDescription(agent, metaDescription);
   return {
-    ...enrichAgentSkills(agent, index, metaSkills),
-    description: metaDescription,
+    ...enrichAgentSkills(agent, index, disabled),
+    description,
     ...(tags ? { tags } : {}),
   };
 }
@@ -176,7 +219,17 @@ async function runConfigMutation<T>(
   }
 }
 
-export async function agentRoutes(app: FastifyInstance): Promise<void> {
+export async function agentRoutes(
+  app: FastifyInstance,
+  deps: AgentRouteDeps = {},
+): Promise<void> {
+  const profileRpc = {
+    getAsset: getProfileAsset,
+    setAsset: setProfileAsset,
+    validateAvatar: validateAvatarData,
+    ...deps.profileRpc,
+  };
+
   // GET /api/agents —— agent 列表 + Hermes 状态（合并 meta description/tags + skills 启停 + hasUi/uiId）。
   app.get("/api/agents", async (): Promise<AgentsResponse> => {
     const snapshot = await getSnapshot();
@@ -325,7 +378,7 @@ export async function agentRoutes(app: FastifyInstance): Promise<void> {
     );
   });
 
-  // POST /api/agents/:id/skills —— skill 启停落盘（meta.json，四重保证）。
+  // POST /api/agents/:id/skills —— skill 启停落盘（官方 disabled_skills 优先，meta.json 回退）。
   app.post<{ Params: { id: string }; Body: SetSkillEnabledRequest }>(
     "/api/agents/:id/skills",
     async (request, reply): Promise<ConfigEditResult | ApiError> => {
@@ -333,6 +386,52 @@ export async function agentRoutes(app: FastifyInstance): Promise<void> {
       return runConfigMutation(reply, () =>
         setSkillEnabled(request.params.id, body),
       );
+    },
+  );
+
+  /* ---------------- M9 · 头像（官方 profile asset） ---------------- */
+
+  // GET /api/agents/:id/avatar —— 转发官方 profiles.get_asset（未设置返回 found:false）。
+  app.get<{ Params: { id: string } }>(
+    "/api/agents/:id/avatar",
+    async (request, reply): Promise<AgentAvatar | ApiError> => {
+      try {
+        return await profileRpc.getAsset(request.params.id);
+      } catch (error) {
+        return configError(reply, error);
+      }
+    },
+  );
+
+  // POST /api/agents/:id/avatar —— 上传头像（confirm 门禁 + PNG/JPEG ≤256KB）。
+  app.post<{ Params: { id: string }; Body: AgentAvatarUploadRequest }>(
+    "/api/agents/:id/avatar",
+    async (
+      request,
+      reply,
+    ): Promise<AgentAvatarUploadResult | ApiError> => {
+      const body = (request.body ?? {}) as AgentAvatarUploadRequest;
+      try {
+        if (body.confirm !== true) {
+          throw new LifecycleError(
+            "CONFIRM_REQUIRED",
+            "头像上传需要显式 confirm:true。",
+          );
+        }
+        const upload = profileRpc.validateAvatar(body.data);
+        const result = await profileRpc.setAsset(
+          request.params.id,
+          upload.dataUrl,
+        );
+        await refreshSnapshot().catch(() => undefined);
+        return {
+          ok: result.ok,
+          size: result.size || upload.bytes,
+          message: `头像已更新（${upload.mime}，${upload.bytes} bytes）。`,
+        };
+      } catch (error) {
+        return configError(reply, error);
+      }
     },
   );
 

@@ -37,6 +37,31 @@ export interface SpawnGatewayOptions {
   startTimeoutMs?: number;
   /** 追加/覆盖环境变量。 */
   env?: NodeJS.ProcessEnv;
+  /**
+   * 是否让 `hermes serve` 带 `HERMES_DESKTOP=1`（启用官方内置 cron ticker）。
+   * 缺省读 OS_CRON_TICKER：未设置 / ≠ "0" → 启用；设为 "0" → 关闭。
+   * 见 M8：定时交由官方 cron，工作台只负责让 serve 触发官方 ticker。
+   */
+  desktopTicker?: boolean;
+}
+
+/**
+ * 计算 gateway 子进程环境变量（纯函数，便于单测）。
+ *
+ * M8：`hermes serve` 只有带 `HERMES_DESKTOP=1` 才会启动官方 cron ticker
+ * （`hermes_cli/web_server.py` 的 `_start_desktop_cron_ticker`）。默认启用，
+ * 可用 `OS_CRON_TICKER=0` 关闭；已显式给出 `HERMES_DESKTOP` 时尊重原值。
+ */
+export function resolveGatewayEnv(
+  baseEnv: NodeJS.ProcessEnv,
+  desktopTicker?: boolean,
+): NodeJS.ProcessEnv {
+  const enabled = desktopTicker ?? baseEnv.OS_CRON_TICKER !== "0";
+  if (!enabled) return baseEnv;
+  if (baseEnv.HERMES_DESKTOP !== undefined && baseEnv.HERMES_DESKTOP !== "") {
+    return baseEnv;
+  }
+  return { ...baseEnv, HERMES_DESKTOP: "1" };
 }
 
 /** 已启动的 gateway 句柄。 */
@@ -109,6 +134,8 @@ export async function spawnGateway(
   options: SpawnGatewayOptions,
 ): Promise<GatewayHandle> {
   const env = options.env ?? process.env;
+  // M8：默认注入 HERMES_DESKTOP=1，让 serve 内置官方 cron ticker（可用 OS_CRON_TICKER=0 关闭）。
+  const childEnv = resolveGatewayEnv(env, options.desktopTicker);
   const port = options.port ?? envInt(env, "OS_GATEWAY_PORT", 0);
   const isolated = options.isolated ?? env.OS_GATEWAY_ISOLATED === "1";
   const skipBuild = options.skipBuild ?? true;
@@ -121,7 +148,7 @@ export async function spawnGateway(
 
   const proc = spawn(options.cliPath, args, {
     shell: false,
-    env,
+    env: childEnv,
     windowsHide: true,
   });
 
@@ -719,6 +746,20 @@ export function getGatewaySnapshot(): GatewaySnapshot {
     cliPath: shared.cliPath,
     lastError,
   };
+}
+
+/**
+ * 返回**已连接**的共享 gateway 客户端；未运行 / 未连接时返回 null（绝不拉起）。
+ *
+ * 用途：配置写读的「官方优先」路径。工作台在用户打开 chat / cron 时已惰性拉起
+ * gateway；此时配置读写可直接走官方 RPC，否则回退文件写。避免为一次配置保存
+ * 额外 spawn 一个 `hermes serve`。
+ */
+export function getSharedGatewayClient(): GatewayClient | null {
+  if (shared && shared.handle.proc.exitCode === null && shared.client.isConnected()) {
+    return shared.client;
+  }
+  return null;
 }
 
 /**

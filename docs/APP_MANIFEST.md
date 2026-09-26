@@ -221,56 +221,21 @@ x-24os-signature: sha256=<HMAC(token, timestamp + "." + body)>
 | `hook.ui.open` / `hook.config.apply` / `hook.notify` | hooks executor | 见 §5 |
 | `gateway.start` / `gateway.stop` / `gateway.error` | gateway 状态监听 | `{port?}` / `{message?}` |
 | `chat.delta` / `chat.done` / `chat.error` | SSE chat stream 摘要 | `{profile?, len}`（**绝不含 prompt/正文**） |
-| `bot.run` | Bot Mode 调度 | `{botId, status, at, len?}` |
+| `cron.changed` | 官方 `cron.changed` 事件转发 | `{source:"hermes"}` |
 
 ### 8.4 连接管理
 
 `Map<ws, {alive}>`；30s ping/pong 心跳防僵死；关闭时清理。
 
-## 9. Bot Mode（M7）
+## 9. 定时任务（M8）
 
-### 9.1 花名册 `bots.yaml`
-
-路径：`~/.24os/bots.yaml`（可用 `OS_BOTS_FILE` 覆盖）；仓库样例 `bots.example.yaml`。
-
-```yaml
-bots:
-  - id: daily-report          # ^[a-z0-9][a-z0-9_-]{0,63}$
-    schedule: "09:00"         # 每天 HH:MM（服务器本地时区），^\d{2}:\d{2}$
-    profile: default          # Hermes profile（缺省 default）
-    prompt: "生成今日运营简报…"
-    notify: [ops-push]        # 已安装 app 的 plugins[].name
-    enabled: true             # 或 disable: true 关闭
-```
-
-校验：id 正则、schedule 正则 + 范围、prompt 非空；非法条目跳过并记入 `errors`。
-
-### 9.2 调度机制
-
-- `startScheduler(deps)` / `stopScheduler()`；默认 **关**（`OS_BOT_ENABLED=1` 才在 `server/index.ts` 启动时自动 start）；
-- 内部 `setInterval` 每 **30s** tick，比对当前 `HH:MM`（`deps.now()` 可注入假时钟）；
-- 到点且**今日该分钟未跑** → 执行：
-  1. `ensureGateway` → `streamPrompt`（失败回退 `completePrompt` 降级链）；
-  2. 结果经 `outbound.pushNotify` 推到 bot `notify` 的 plugins；
-  3. 广播 `{type:"bot.run", payload:{botId, status, at, len?}}`（**不广播正文**）；
-  4. 写环形运行日志（最近 100）。
-- `POST /api/bots/:id/enable|disable`：改**内存态**（落盘需另走四重保证，当前不落盘）。
-
-### 9.3 API
-
-| 端点 | 说明 |
-| --- | --- |
-| `GET /api/bots` | 列表 + `nextRun` + `lastRun` + 调度器状态 + 最近日志 |
-| `GET /api/bots/log` | 环形运行日志 |
-| `POST /api/bots/:id/enable` | 内存启用（404 未知 id） |
-| `POST /api/bots/:id/disable` | 内存禁用 |
-
-### 9.4 环境变量
-
-| 变量 | 作用 | 默认 |
-| --- | --- | --- |
-| `OS_BOT_ENABLED` | 设为 `1` 时启动自动 `startScheduler` | 关（默认不调模型） |
-| `OS_BOTS_FILE` | 花名册路径 | `~/.24os/bots.yaml` |
-
-SIGINT / 关闭时 `stopScheduler()`，避免残留定时器与 gateway。
+> **定时已改用 Hermes 官方 Cron**，不再由 AppManifest / 工作台调度。原 M7 Bot Mode
+> （`~/.24os/bots.yaml` + 30s 调度器 + `/api/bots`）已删除。
+>
+> 完整设计与迁移说明见 [`CRON.md`](CRON.md)：
+>
+> - `server/hermes/cron.ts` 薄封装官方 `cron.manage` RPC + `cron.changed` 事件；
+> - `server/routes/cron.ts` 提供 `GET /api/cron/jobs` 与 `POST /api/cron/jobs[...]`（confirm 门禁）；
+> - 官方 ticker 由 `HERMES_DESKTOP=1` 的 `hermes serve` 触发（`OS_CRON_TICKER=0` 关闭）；
+> - Dashboard WS 广播 `cron.changed`。
 

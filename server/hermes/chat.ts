@@ -56,15 +56,45 @@ const SESSION_EVENT_TYPES: ReadonlySet<string> = new Set([
   "todo.updated",
   "gateway.ready",
   "skin.changed",
-  // M5：审批撤回 + subagent 观测事件（contracts/events.py::request.cancel / subagent.*）。
+  // M5：审批撤回（contracts/events.py::request.cancel）。
+  // 注：subagent.* 事件已由 normalizeSubagentEvent 单独归一化为 `type:"subagent"`。
   "request.cancel",
-  "subagent.spawn_requested",
-  "subagent.start",
-  "subagent.progress",
-  "subagent.thinking",
-  "subagent.tool",
-  "subagent.complete",
 ]);
+
+/** subagent.* 事件名 → 归一化 phase（未知事件保守归为 "unknown"）。 */
+const SUBAGENT_PHASES: Readonly<Record<string, NonNullable<ChatStreamEvent["phase"]>>> = {
+  "subagent.spawn_requested": "spawn_requested",
+  "subagent.start": "start",
+  "subagent.progress": "progress",
+  "subagent.thinking": "thinking",
+  "subagent.tool": "tool",
+  "subagent.complete": "complete",
+};
+
+/**
+ * 把 `subagent.*` gateway 事件归一化为 `type:"subagent"` 事件。
+ * 官方 payload 见 contracts/events.py::SubagentEventPayload（identity 字段可缺省）。
+ */
+function normalizeSubagentEvent(
+  type: string,
+  sessionId: string | undefined,
+  payload: Record<string, unknown>,
+): ChatStreamEvent {
+  return {
+    type: "subagent",
+    sessionId,
+    event: type,
+    phase: SUBAGENT_PHASES[type] ?? "unknown",
+    subagentId: str(payload.subagent_id),
+    parentId: str(payload.parent_id),
+    childSessionId: str(payload.child_session_id),
+    goal: str(payload.goal),
+    toolName: str(payload.tool_name),
+    text: str(payload.text),
+    status: str(payload.status),
+    payload,
+  };
+}
 
 /** 安全判定为普通对象。 */
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -152,9 +182,21 @@ export function normalizeGatewayEvent(
         message: str(payload.message) ?? "gateway 会话错误",
       };
 
+    case "subagent.spawn_requested":
+    case "subagent.start":
+    case "subagent.progress":
+    case "subagent.thinking":
+    case "subagent.tool":
+    case "subagent.complete":
+      return normalizeSubagentEvent(type, sessionId, payload);
+
     default:
       if (SESSION_EVENT_TYPES.has(type)) {
         return { type: "session", sessionId, event: type, payload };
+      }
+      // 未知 subagent.* 事件：保守归为 phase:"unknown"（保留原始 type 与 payload）。
+      if (type.startsWith("subagent.")) {
+        return normalizeSubagentEvent(type, sessionId, payload);
       }
       return { type: "raw", sessionId, raw: params };
   }

@@ -5,18 +5,13 @@ import type { ApiError } from "@shared/types";
 import { getSnapshot } from "./hermes";
 import { onGatewayStatusChange, stopSharedGateway } from "./hermes/gateway";
 import { agentRoutes } from "./routes/agents";
+import { cronRoutes } from "./routes/cron";
 import { hermesRoutes } from "./routes/hermes";
 import { skillUiRoutes } from "./routes/skillUi";
 import { hookRoutes } from "./routes/hooks";
-import { botRoutes } from "./routes/bots";
 import { attachDashboardWs, isLoopbackHost, type DashboardWsHandle } from "./routes/ws";
 import { broadcast } from "./dashboard/bus";
 import { startHookExecutor } from "./hooks/executor";
-import {
-  isBotModeEnvEnabled,
-  startScheduler,
-  stopScheduler,
-} from "./bot/scheduler";
 import {
   resolveWebDistRoot,
   shouldBypassWebToken,
@@ -148,7 +143,8 @@ app.get("/", async (request, reply) => {
     "/api/hermes/gateway/stop (POST)",
     "/api/hermes/chat/stream (POST, SSE)",
     "/api/hermes/chat/decide (POST)",
-    "/api/hermes/subagent (POST)",
+    "/api/hermes/subagent (POST, spawn 不支持 → 501)",
+    "/api/hermes/subagents (GET) · /:id/tail (GET) · /:id/interrupt|steer (POST) · /pause (POST)",
     "/api/agents",
     "/api/agents/:id",
     "/api/agents (POST install)",
@@ -160,6 +156,7 @@ app.get("/", async (request, reply) => {
     "/api/agents/:id/env (POST) · /api/agents/:id/env/:key (DELETE)",
     "/api/agents/:id/config/restore (POST)",
     "/api/agents/:id/skills (POST)",
+    "/api/agents/:id/avatar (GET/POST)",
     "/api/market",
     "/api/market/apps/:id (GET)",
     "/api/market/:id/apply (POST)",
@@ -172,9 +169,9 @@ app.get("/", async (request, reply) => {
     "/api/health",
     "/api/ws (WebSocket)",
     "/api/hooks/log",
-    "/api/bots",
-    "/api/bots/log",
-    "/api/bots/:id/enable|disable (POST)",
+    "/api/cron/jobs",
+    "/api/cron/jobs (POST, confirm)",
+    "/api/cron/jobs/:name/pause|resume|remove|run (POST, confirm)",
     ],
   };
 });
@@ -204,11 +201,6 @@ async function shutdown(signal: string): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
   app.log.info(`收到 ${signal}，正在关闭…`);
-  try {
-    stopScheduler();
-  } catch {
-    // ignore
-  }
   try {
     offGatewayStatus();
   } catch {
@@ -249,7 +241,7 @@ async function main(): Promise<void> {
   await app.register(hermesRoutes);
   await app.register(skillUiRoutes);
   await app.register(hookRoutes);
-  await app.register(botRoutes);
+  await app.register(cronRoutes);
 
   try {
     const snapshot = await getSnapshot();
@@ -264,13 +256,6 @@ async function main(): Promise<void> {
     // listen 之后再挂 WS upgrade（需要底层 server 就绪）。
     wsHandle = attachDashboardWs(app, { host: HOST, token: TOKEN });
     app.log.info(`Dashboard WS 已挂载：ws://${HOST}:${PORT}/api/ws`);
-
-    if (isBotModeEnvEnabled()) {
-      startScheduler();
-      app.log.info("Bot Mode 已启用（OS_BOT_ENABLED=1），调度器启动。");
-    } else {
-      app.log.info("Bot Mode 默认关闭（OS_BOT_ENABLED≠1）。");
-    }
 
     // eslint-disable-next-line no-console
     console.log(`\n  24H-OS server 已启动：http://${HOST}:${PORT}\n`);

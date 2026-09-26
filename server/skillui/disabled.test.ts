@@ -13,6 +13,8 @@ import { isSkillDisabled, withDisabledFlags } from "./disabled";
 
 const tempDirs: string[] = [];
 const savedMetaDir = process.env.OS_META_DIR;
+const savedHome = process.env.HERMES_HOME;
+const savedOsHome = process.env.OS_HERMES_HOME;
 let metaRoot: string;
 
 function newTempDir(prefix: string): string {
@@ -47,11 +49,18 @@ function makeSkill(id: string, dirName = id): SkillUiInfo {
 beforeEach(() => {
   metaRoot = newTempDir("24os-disabled-meta-");
   process.env.OS_META_DIR = metaRoot;
+  // 官方读取仅在显式 home 时启用；测试默认隔离（避免误扫真实 ~/.hermes）。
+  delete process.env.HERMES_HOME;
+  delete process.env.OS_HERMES_HOME;
 });
 
 afterEach(() => {
   if (savedMetaDir === undefined) delete process.env.OS_META_DIR;
   else process.env.OS_META_DIR = savedMetaDir;
+  if (savedHome === undefined) delete process.env.HERMES_HOME;
+  else process.env.HERMES_HOME = savedHome;
+  if (savedOsHome === undefined) delete process.env.OS_HERMES_HOME;
+  else process.env.OS_HERMES_HOME = savedOsHome;
   while (tempDirs.length > 0) {
     const dir = tempDirs.pop();
     if (dir) rmSync(dir, { recursive: true, force: true });
@@ -120,5 +129,33 @@ describe("withDisabledFlags —— 批量标注", () => {
 describe("SKILL_DISABLED 错误码注册", () => {
   it("statusForCode 映射 403", () => {
     expect(statusForCode("SKILL_DISABLED")).toBe(403);
+  });
+});
+
+describe("M9 官方 disabled_skills 优先（meta 回退）", () => {
+  it("官方 config.yaml skills.disabled 命中；同 agent 的 meta 记录被忽略", async () => {
+    const home = newTempDir("24os-disabled-home-");
+    const profileDir = path.join(home, "profiles", "agent-a");
+    mkdirSync(profileDir, { recursive: true });
+    writeFileSync(
+      path.join(profileDir, "config.yaml"),
+      "model: m\nskills:\n  disabled:\n    - official-skill\n",
+      "utf8",
+    );
+    process.env.HERMES_HOME = home;
+    // 同一 agent 的 meta 标了另一个 skill 禁用 → 官方已管理此 agent，meta 被忽略。
+    writeAgentMeta("agent-a", { "meta-only": { enabled: false } });
+
+    expect(await isSkillDisabled(makeSkill("official-skill"))).toBe(true);
+    expect(await isSkillDisabled(makeSkill("meta-only"))).toBe(false);
+
+    const [annotated] = await withDisabledFlags([makeSkill("official-skill")]);
+    expect(annotated?.disabled).toBe(true);
+  });
+
+  it("无官方 skills 段的 agent 仍回退 meta（测试隔离时不影响既有口径）", async () => {
+    // HERMES_HOME 已删除（beforeEach）→ 官方读取整体跳过，纯 meta 口径。
+    writeAgentMeta("agent-a", { "meta-skill": { enabled: false } });
+    expect(await isSkillDisabled(makeSkill("meta-skill"))).toBe(true);
   });
 });

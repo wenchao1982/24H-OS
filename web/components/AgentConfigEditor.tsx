@@ -119,6 +119,7 @@ export default function AgentConfigEditor({
 
   const [model, setModel] = useState("");
   const [description, setDescription] = useState("");
+  const [soul, setSoul] = useState("");
   const [tags, setTags] = useState("");
 
   const [mcpForm, setMcpForm] = useState<McpForm | null>(null);
@@ -136,6 +137,7 @@ export default function AgentConfigEditor({
       setConfig(data);
       setModel(data.model ?? "");
       setDescription(data.description);
+      setSoul(data.soul ?? "");
       setTags(data.tags.join(", "));
     } catch (err) {
       setError(errorText(err));
@@ -159,7 +161,13 @@ export default function AgentConfigEditor({
       const result = await pending.run();
       const backupNote =
         result.backups.length > 0 ? `（已生成备份 ${result.backups.length} 份）` : "";
-      setNotice(`${result.message}${backupNote}`);
+      const viaLabel =
+        result.via === "rpc"
+          ? "官方 RPC"
+          : result.via === "cli"
+            ? "官方 CLI"
+            : "文件回退";
+      setNotice(`${result.message}${backupNote} · 通道：${viaLabel}`);
       setPending(null);
       setMcpForm(null);
       setEnvValue("");
@@ -176,11 +184,14 @@ export default function AgentConfigEditor({
     if (!config) return;
     const patch: {
       model?: string;
+      soul?: string;
       description: string;
       tags: string[];
       confirm: true;
     } = { description, tags: parseTags(tags), confirm: true };
     if (model.trim()) patch.model = model.trim();
+    // 人设（SOUL）：仅在与加载值不同时提交（空串 = 清空人设）。
+    if (soul !== (config.soul ?? "")) patch.soul = soul;
     setPending({
       title: "确认保存配置",
       summary: (
@@ -189,12 +200,13 @@ export default function AgentConfigEditor({
             模型：<code>{patch.model ?? "（不修改）"}</code>
           </li>
           <li>描述：{description || "（空）"}</li>
+          <li>人设（SOUL）：{soul ? `${soul.slice(0, 80)}${soul.length > 80 ? "…" : ""}` : "（不变）"}</li>
           <li>标签：{parseTags(tags).join(", ") || "（无）"}</li>
           <li>
             config.yaml：<code>{config.configPath ?? "（将新建）"}</code>
           </li>
           <li>
-            meta.json：<code>{config.metaPath}</code>
+            SOUL.md / meta.json：<code>{config.metaPath}</code>
           </li>
         </ul>
       ),
@@ -338,6 +350,16 @@ export default function AgentConfigEditor({
               />
             </label>
           </div>
+          <label className="form-row config-textarea">
+            <span className="field-label">人设（SOUL）</span>
+            <textarea
+              className="input"
+              rows={5}
+              placeholder="persona 正文；写入官方 SOUL.md（profiles.configure.soul）"
+              value={soul}
+              onChange={(event) => setSoul(event.target.value)}
+            />
+          </label>
           <label className="form-row config-textarea">
             <span className="field-label">功能描述</span>
             <textarea

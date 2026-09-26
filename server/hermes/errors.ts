@@ -32,10 +32,22 @@ export type LifecycleErrorCode =
   | "CHAT_NOT_FOUND"
   | "DECISION_RESOLVED"
   | "UNSUPPORTED"
+  // M10 · subagent 观测/控制（spawn 走会话内 delegate_task）
+  | "SPAWN_UNSUPPORTED"
+  | "SUBAGENT_RPC_ERROR"
+  | "SUBAGENT_UNAVAILABLE"
   // M6 · AppManifest
   | "INVALID_MANIFEST"
   | "SIGN_MISMATCH"
-  | "APP_NOT_FOUND";
+  | "APP_NOT_FOUND"
+  // M8 · 官方 Cron 薄封装
+  | "CRON_UNAVAILABLE"
+  | "CRON_RPC_ERROR"
+  | "CRON_JOB_NOT_FOUND"
+  // M9 · 官方 Profile 对齐（描述 / SOUL / skill 启停 / 头像）
+  | "PROFILE_RPC_ERROR"
+  | "PROFILE_NOT_FOUND"
+  | "INVALID_ASSET";
 
 /** 生命周期层的统一错误类型，携带稳定的错误码。 */
 export class LifecycleError extends Error {
@@ -72,6 +84,8 @@ export function statusForCode(code: LifecycleErrorCode): number {
     case "INVALID_MANIFEST":
     case "SIGN_MISMATCH":
       return 400;
+    case "INVALID_ASSET":
+      return 400;
     case "MCP_SERVER_EXISTS":
       return 409;
     case "MCP_SERVER_NOT_FOUND":
@@ -79,19 +93,27 @@ export function statusForCode(code: LifecycleErrorCode): number {
     case "AGENT_NOT_FOUND":
     case "APP_NOT_FOUND":
     case "CHAT_NOT_FOUND":
+    case "CRON_JOB_NOT_FOUND":
+    case "PROFILE_NOT_FOUND":
       return 404;
     case "DECISION_RESOLVED":
       return 409;
     case "SKILL_DISABLED":
       return 403;
     case "UNSUPPORTED":
+    case "SPAWN_UNSUPPORTED":
       return 501;
     case "HERMES_CLI_UNAVAILABLE":
     case "GATEWAY_UNAVAILABLE":
+    case "CRON_UNAVAILABLE":
+    case "SUBAGENT_UNAVAILABLE":
       return 503;
     case "GATEWAY_TIMEOUT":
       return 504;
     case "GATEWAY_RPC_ERROR":
+    case "CRON_RPC_ERROR":
+    case "PROFILE_RPC_ERROR":
+    case "SUBAGENT_RPC_ERROR":
       return 502;
     case "COMMAND_FAILED":
       return 502;

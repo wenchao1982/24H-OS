@@ -217,9 +217,11 @@ export default function SkillHost({
               ? "chat.error"
               : event.type === "tool.start" || event.type === "tool.complete"
                 ? "chat.tool"
-                : event.type === "approval" || event.type === "clarify"
-                  ? "chat.request"
-                  : "chat.event";
+                : event.type === "subagent"
+                  ? "chat.subagent"
+                  : event.type === "approval" || event.type === "clarify"
+                    ? "chat.request"
+                    : "chat.event";
       const message: SkillUiEventMessage = {
         __24os: true,
         type: "event",
@@ -298,7 +300,11 @@ export default function SkillHost({
             ? `status=${event.status ?? "complete"}`
             : event.type === "error"
               ? (event.message ?? "")
-              : summarize(event);
+              : event.type === "subagent"
+                ? `子代理 ${event.phase ?? "?"}${event.goal ? `：${event.goal}` : ""}${
+                    event.status ? `（${event.status}）` : ""
+                  }`
+                : summarize(event);
       pushLog({
         kind: event.type === "error" ? "error" : "event",
         method: name,

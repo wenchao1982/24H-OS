@@ -1,6 +1,13 @@
-import { useState } from "react";
+import { useEffect, useState, type ChangeEvent } from "react";
 import type { Agent, HermesStatus, LifecycleResult } from "@shared/types";
-import { ApiRequestError, backupAgent, deleteAgent, updateAgent } from "../api";
+import {
+  ApiRequestError,
+  backupAgent,
+  deleteAgent,
+  fetchAgentAvatar,
+  updateAgent,
+  uploadAgentAvatar,
+} from "../api";
 import AgentConfigEditor from "../components/AgentConfigEditor";
 import CommandResult from "../components/CommandResult";
 import Modal from "../components/Modal";
@@ -43,6 +50,51 @@ export default function AgentDetail({
   const [result, setResult] = useState<LifecycleResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
+  const [avatar, setAvatar] = useState<string | null>(null);
+  const [avatarBusy, setAvatarBusy] = useState(false);
+  const [avatarError, setAvatarError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setAvatar(null);
+    setAvatarError(null);
+    fetchAgentAvatar(agent.id)
+      .then((res) => {
+        if (!cancelled && res.found && res.data) setAvatar(res.data);
+      })
+      .catch(() => {
+        // 头像不是关键路径：读取失败静默回退首字母。
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [agent.id]);
+
+  const submitAvatar = async (data: string) => {
+    setAvatarBusy(true);
+    setAvatarError(null);
+    try {
+      await uploadAgentAvatar(agent.id, data);
+      setAvatar(data);
+    } catch (err) {
+      setAvatarError(errorText(err));
+    } finally {
+      setAvatarBusy(false);
+    }
+  };
+
+  const onAvatarFile = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const data = typeof reader.result === "string" ? reader.result : "";
+      if (data) void submitAvatar(data);
+    };
+    reader.readAsDataURL(file);
+  };
 
   const cliAvailable = status?.cliPath != null;
   const cliReason = "未检测到 hermes CLI，生命周期操作不可用（仍可预览 dryRun）。";
@@ -90,13 +142,35 @@ export default function AgentDetail({
   return (
     <article className="detail">
       <header className="detail-header">
-        <div>
-          <h1>{agent.name}</h1>
-          <p className="detail-path" title={agent.path}>
-            {agent.path}
-          </p>
+        <div className="detail-identity">
+          <span className="agent-avatar" data-testid="agent-avatar">
+            {avatar ? (
+              <img src={avatar} alt={`${agent.name} 头像`} />
+            ) : (
+              (agent.name.trim()[0] ?? "?").toUpperCase()
+            )}
+          </span>
+          <div>
+            <h1>{agent.name}</h1>
+            <p className="detail-path" title={agent.path}>
+              {agent.path}
+            </p>
+          </div>
         </div>
         <div className="detail-actions">
+          <label
+            className="btn-secondary btn-upload-avatar"
+            title="上传头像（PNG / JPEG，≤256KB）"
+          >
+            {avatarBusy ? "上传中…" : "换头像"}
+            <input
+              type="file"
+              accept="image/png,image/jpeg"
+              disabled={avatarBusy}
+              onChange={onAvatarFile}
+              style={{ display: "none" }}
+            />
+          </label>
           <span className={agent.source === "mock" ? "badge badge-mock" : "badge badge-live"}>
             {agent.source === "mock" ? "mock" : "profile"}
           </span>
@@ -132,6 +206,7 @@ export default function AgentDetail({
 
       {!cliAvailable && <div className="notice">{cliReason}</div>}
       {error && <div className="notice notice-error">{error}</div>}
+      {avatarError && <div className="notice notice-error">头像：{avatarError}</div>}
 
       {result && <CommandResult result={result} title="执行结果" />}
 
